@@ -66,6 +66,23 @@ func (node *RaftNode) LastLogTerm() Term {
 	return node.log[lastIndex].term
 }
 
+// Helper functions for getting states, in case we want to implement persistence / atomic operations
+func (node *RaftNode) getVotedFor() NodeId {
+	return node.votedFor
+}
+
+func (node *RaftNode) setVotedFor(votedFor NodeId) {
+	node.votedFor = votedFor
+}
+
+func (node *RaftNode) getCurrentTerm() Term {
+	return node.currentTerm
+}
+
+func (node *RaftNode) setCurrentTerm(currentTerm Term) {
+	node.currentTerm = currentTerm
+}
+
 func (node *RaftNode) convertToFollower() {}
 
 type RequestVoteArgs struct {
@@ -82,10 +99,10 @@ type RequestVoteResponse struct {
 
 // Invoked by candidates to gather votes, not called directly by this RaftNode (Section 5.2)
 func (node *RaftNode) RequestVote(args RequestVoteArgs) RequestVoteResponse {
-	reply := RequestVoteResponse{currentTerm: node.currentTerm, voteGranted: false}
+	reply := RequestVoteResponse{currentTerm: node.getCurrentTerm(), voteGranted: false}
 
 	// Reply false if term < currentTerm (Section 5.1)
-	if args.candiateTerm < node.currentTerm {
+	if args.candiateTerm < node.getCurrentTerm() {
 		return reply
 	}
 
@@ -93,8 +110,8 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs) RequestVoteResponse {
 	// node.convertToFollower()
 
 	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote (Section 5.4.1)
-	if (node.votedFor == -1 || node.votedFor == args.candidateId) && node.isCandidateUpToDate(args.lastLogTerm, args.lastLogIndex) {
-		node.votedFor = args.candidateId
+	if (node.getVotedFor() == -1 || node.getVotedFor() == args.candidateId) && node.isCandidateUpToDate(args.lastLogTerm, args.lastLogIndex) {
+		node.setVotedFor(args.candidateId)
 		reply.voteGranted = true
 
 		// TODO: Section 5.2, indicate that during this timeout period, we granted a vote
@@ -127,6 +144,6 @@ type AppendEntriesResponse struct {
 
 // Invoked by leader to replicate log entries (Section 5.3); also used as a heartbeat
 func (node *RaftNode) AppendEntries(args AppendEntriesArgs) AppendEntriesResponse {
-	reply := AppendEntriesResponse{currentTerm: node.currentTerm, success: false}
+	reply := AppendEntriesResponse{currentTerm: node.getCurrentTerm(), success: false}
 	return reply
 }
