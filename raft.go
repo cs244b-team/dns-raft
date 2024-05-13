@@ -9,6 +9,32 @@ type LogEntry struct {
 	// data generic?w 4y
 }
 
+type RaftState uint32
+
+const (
+	// Follower as the default state of a Raft node.
+	Follower RaftState = iota
+	Candidate
+	Leader
+	// The node has been shutdown.
+	Shutdown
+)
+
+func (s RaftState) String() string {
+	switch s {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	case Shutdown:
+		return "Shutdown"
+	default:
+		return "Unknown"
+	}
+}
+
 type RaftNode struct {
 	// Persistent state on all servers
 	// TODO: make these persistent
@@ -19,6 +45,7 @@ type RaftNode struct {
 	// Volatile state on all servers
 	commitIndex int // Index of highest log entry known to be committed (initialized to 0)
 	lastApplied int // Index of highest log entry applied to state machine (initialized to 0)
+	state RaftState
 
 	// Volatile state on leaders
 	nextIndex  map[NodeId]int // For each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
