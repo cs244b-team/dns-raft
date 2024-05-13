@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -55,12 +56,24 @@ type RaftNode struct {
 	matchIndex map[NodeId]int // For each server, index of highest log entry known to be replicated on server
 
 	// Server and cluster state
-	serverID NodeId           // the id of this server
-	leaderID Optional[NodeId] // the id of the leader
-	cluster  []NodeId         // Ids of all servers in the cluster
+	serverId NodeId                 // the id of this server
+	leaderId Optional[NodeId]       // the id of the leader
+	cluster  []NodeId               // Ids of all servers in the cluster
+	peers    map[NodeId]*rpc.Client // Save RPC clients for all peers
 }
 
-func NewRaftNode(serverId string) *RaftNode {
+func dialAndConnect(nodeId NodeId) *rpc.Client {
+	otherNode, err := rpc.DialHTTP("tcp", string(nodeId))
+	if err != nil {
+		println("Dial err", err)
+		return nil
+	} else {
+		println("Connected to " + nodeId)
+		return otherNode
+	}
+}
+
+func NewRaftNode(serverId string, cluster []NodeId) *RaftNode {
 	r := new(RaftNode)
 	r.currentTerm = 0
 	r.votedFor = None[NodeId]()
@@ -70,12 +83,15 @@ func NewRaftNode(serverId string) *RaftNode {
 	r.state = Follower
 	r.nextIndex = make(map[NodeId]int)
 	r.matchIndex = make(map[NodeId]int)
-	r.serverID = NodeId(serverId)
-	r.leaderID = None[NodeId]()
-	r.cluster = make([]NodeId, 0)
+	r.serverId = NodeId(serverId)
+	r.leaderId = None[NodeId]()
+	r.cluster = cluster
+	r.peers = make(map[NodeId]*rpc.Client)
 
 	// Register RPC handler and serve immediately
 	rpc.Register(r)
+
+	// TODO: handle different grpc paths to run multiple nodes on the same physical server
 	rpc.HandleHTTP()
 
 	// Create a TCP listener
@@ -85,29 +101,19 @@ func NewRaftNode(serverId string) *RaftNode {
 	}
 	go http.Serve(listener, nil)
 
+	// TODO: Dial other nodes --> save *Client (RPC client)
+	for _, nodeId := range r.cluster {
+		if nodeId != r.serverId {
+			r.peers[nodeId] = dialAndConnect(nodeId)
+		}
+	}
+
 	// TODO: other node startup events
 	// go func() {
 	// 	// start election timer
 	// }()
 
 	return r
-}
-
-// Respond to RPCs from candidates and leaders
-// IF election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
-
-func (node *RaftNode) runFollower() {
-	// https://github.com/hashicorp/raft/blob/main/raft.go#L156C16-L156C27
-	// for ...
-	// break when election timer expires
-}
-
-func (node *RaftNode) runCandidate() {
-
-}
-
-func (node *RaftNode) runLeader() {
-
 }
 
 // Helper functions for getting states, in case we want to implement persistence / atomic operations
@@ -135,8 +141,6 @@ func (node *RaftNode) setState(state RaftState) {
 	node.state = state
 }
 
-func (node *RaftNode) convertToFollower() {}
-
 // Retrieve the index of the last log entry (-1 if no entries)
 func (node *RaftNode) LastLogIndex() int {
 	return len(node.log) - 1
@@ -153,10 +157,18 @@ func (node *RaftNode) LastLogTerm() Term {
 
 // Determine if a candidate's log is at least as up-to-date as the receiver's log
 func (node *RaftNode) isCandidateUpToDate(lastLogTerm Term, lastLogIndex int) bool {
-	return lastLogTerm > node.LastLogTerm() || (lastLogTerm == node.LastLogTerm() && lastLogIndex > node.LastLogIndex())
+	return lastLogTerm > node.LastLogTerm() || (lastLogTerm == node.LastLogTerm() && lastLogIndex >= node.LastLogIndex())
 }
 
-func (node *RaftNode) connectToPeers() {}
+func (node *RaftNode) convertToFollower(term Term) {
+	node.setCurrentTerm(term)
+	node.setState(Follower)
+}
+
+func (node *RaftNode) convertToLeader() {
+	println(node.serverId + " became leader!")
+	node.setState(Leader)
+}
 
 // Main event loop for this RaftNode
 func (node *RaftNode) run() {
@@ -170,6 +182,76 @@ func (node *RaftNode) run() {
 			node.runLeader()
 		}
 	}
+}
+
+// Respond to RPCs from candidates and leaders
+// IF election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
+
+func (node *RaftNode) runFollower() {
+	// https://github.com/hashicorp/raft/blob/main/raft.go#L156C16-L156C27
+	// for ...
+	// break when election timer expires
+}
+
+func (node *RaftNode) runCandidate() {
+	// Call RequestVote on peers
+	voteChannel := node.startElection()
+	voteReceived := 0
+	for node.getState() == Candidate {
+		select {
+		// TODO: case election timer timeout, start new election
+		// TODO: case receive AppendEntries, convert to follower
+		case vote := <-voteChannel:
+			fmt.Println("Vote:", vote)
+			// If RPC response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
+			if vote.CurrentTerm > node.getCurrentTerm() {
+				node.convertToFollower(vote.CurrentTerm)
+				return
+			}
+
+			if vote.VoteGranted {
+				voteReceived++
+			}
+
+			if voteReceived >= (len(node.cluster)+1)/2 {
+				node.convertToLeader()
+				return
+			}
+		}
+	}
+}
+
+func (node *RaftNode) runLeader() {
+
+}
+
+func (node *RaftNode) startElection() <-chan RequestVoteResponse {
+	// Create a vote response channel
+	voteChannel := make(chan RequestVoteResponse, len(node.cluster))
+
+	// Increment our current term
+	node.setCurrentTerm(node.getCurrentTerm() + 1)
+
+	// Vote for self
+	node.votedFor = New[NodeId](node.serverId)
+	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true}
+
+	// TODO: restart timer
+
+	// Request votes from all peers in parallel
+	args := RequestVoteArgs{node.currentTerm, node.serverId, node.LastLogIndex(), node.LastLogTerm()}
+	for _, peerClient := range node.peers {
+		go func(c *rpc.Client) {
+			var reply RequestVoteResponse
+			err := c.Call("RaftNode.RequestVote", args, &reply)
+			if err != nil {
+				log.Fatal("RequestVote error:", err)
+			}
+			voteChannel <- reply
+		}(peerClient)
+	}
+
+	return voteChannel
 }
 
 // RPC logic below
@@ -198,6 +280,11 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 	}
 
 	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote (Section 5.4.1)
+	fmt.Println(
+		!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId,
+		node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex),
+	)
+
 	if (!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId) && node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex) {
 		node.setVotedFor(args.CandidateId)
 		response.VoteGranted = true
@@ -208,11 +295,10 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 		// convert to candidate
 	}
 
-	// // TODO: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
-	// if args.CandidateTerm > node.getCurrentTerm() {
-	// 	node.setCurrentTerm(args.CandidateTerm)
-	// 	node.setState(Follower)
-	// }
+	// If RPC request contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
+	if args.CandidateTerm > node.getCurrentTerm() {
+		node.convertToFollower(args.CandidateTerm)
+	}
 
 	*reply = response
 	return nil
