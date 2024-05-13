@@ -83,6 +83,14 @@ func (node *RaftNode) setCurrentTerm(currentTerm Term) {
 	node.currentTerm = currentTerm
 }
 
+func (node *RaftNode) getState() RaftState {
+	return node.state
+}
+
+func (node *RaftNode) setState(state RaftState) {
+	node.state = state
+}
+
 func (node *RaftNode) convertToFollower() {}
 
 type RequestVoteArgs struct {

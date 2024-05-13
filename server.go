@@ -1,7 +1,7 @@
 package main
 
 import (
-	"net/rpc"
+	// "net/rpc"
 )
 
 type ServerID int
@@ -24,5 +24,28 @@ type Server struct {
 
 
 func (s *Server) run() {
-	
+	for {
+		switch s.raftNode.getState() {
+		case Follower:
+			s.runFollower()
+		case Candidate:
+			s.runCandidate()
+		case Leader:
+			s.runLeader()
+		}
+	}
+}
+
+
+func (s *Server) runFollower() {
+
+}
+
+
+func (s *Server) runCandidate() {
+
+}
+
+func (s *Server) runLeader() {
+
 }
