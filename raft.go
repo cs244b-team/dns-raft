@@ -39,6 +39,19 @@ type LogEntry struct {
 	// data generic?w 4y
 }
 
+type Config struct {
+	// election timeout in milliseconds
+	ElectionMin	int
+	ElectionMax	int
+}
+
+func DefaultConfig() Config {
+	return Config{
+		ElectionMin: 150,
+		ElectionMax: 300,
+	}
+}
+
 type RaftNode struct {
 	// Persistent state on all servers
 	// TODO: make these persistent
@@ -60,6 +73,9 @@ type RaftNode struct {
 	leaderId Optional[NodeId]       // the id of the leader
 	cluster  []NodeId               // Ids of all servers in the cluster
 	peers    map[NodeId]*rpc.Client // Save RPC clients for all peers
+
+	// Configuration
+	config Config
 }
 
 func dialAndConnect(nodeId NodeId) *rpc.Client {
@@ -73,7 +89,7 @@ func dialAndConnect(nodeId NodeId) *rpc.Client {
 	}
 }
 
-func NewRaftNode(serverId string, cluster []NodeId) *RaftNode {
+func NewRaftNode(serverId string, cluster []NodeId, config Config) *RaftNode {
 	r := new(RaftNode)
 	r.currentTerm = 0
 	r.votedFor = None[NodeId]()
@@ -87,6 +103,7 @@ func NewRaftNode(serverId string, cluster []NodeId) *RaftNode {
 	r.leaderId = None[NodeId]()
 	r.cluster = cluster
 	r.peers = make(map[NodeId]*rpc.Client)
+	r.config = config
 
 	// Register RPC handler and serve immediately
 	rpc.Register(r)

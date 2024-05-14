@@ -5,9 +5,11 @@ package main
 func main() {
 	cluster := []NodeId{"127.0.0.1:9000", "127.0.0.1:9001", "127.0.0.1:9002"}
 
-	node1 := NewRaftNode("127.0.0.1:9000", cluster)
-	node2 := NewRaftNode("127.0.0.1:9001", cluster)
-	node3 := NewRaftNode("127.0.0.1:9002", cluster)
+	config := DefaultConfig()
+
+	node1 := NewRaftNode("127.0.0.1:9000", cluster, config)
+	node2 := NewRaftNode("127.0.0.1:9001", cluster, config)
+	node3 := NewRaftNode("127.0.0.1:9002", cluster, config)
 
 	node2.setState(Candidate)
 
