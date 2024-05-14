@@ -11,9 +11,13 @@ func main() {
 	node2 := NewRaftNode("127.0.0.1:9001", cluster, config)
 	node3 := NewRaftNode("127.0.0.1:9002", cluster, config)
 
+	node1.connectToCluster()
+	node2.connectToCluster()
+	node3.connectToCluster()
+
 	node2.setState(Candidate)
 
-	node1.run()
-	node2.run()
+	go node1.run()
+	go node2.run()
 	node3.run()
 }

@@ -41,8 +41,8 @@ type LogEntry struct {
 
 type Config struct {
 	// election timeout in milliseconds
-	ElectionMin	int
-	ElectionMax	int
+	ElectionMin int
+	ElectionMax int
 }
 
 func DefaultConfig() Config {
@@ -78,17 +78,6 @@ type RaftNode struct {
 	config Config
 }
 
-func dialAndConnect(nodeId NodeId) *rpc.Client {
-	otherNode, err := rpc.DialHTTP("tcp", string(nodeId))
-	if err != nil {
-		println("Dial err", err)
-		return nil
-	} else {
-		println("Connected to " + nodeId)
-		return otherNode
-	}
-}
-
 func NewRaftNode(serverId string, cluster []NodeId, config Config) *RaftNode {
 	r := new(RaftNode)
 	r.currentTerm = 0
@@ -105,11 +94,13 @@ func NewRaftNode(serverId string, cluster []NodeId, config Config) *RaftNode {
 	r.peers = make(map[NodeId]*rpc.Client)
 	r.config = config
 
+	rpcServer := rpc.NewServer()
+
 	// Register RPC handler and serve immediately
-	rpc.Register(r)
+	rpcServer.Register(r)
 
 	// TODO: handle different grpc paths to run multiple nodes on the same physical server
-	rpc.HandleHTTP()
+	rpcServer.HandleHTTP("/"+serverId, "/debug/"+serverId)
 
 	// Create a TCP listener
 	listener, err := net.Listen("tcp", serverId)
@@ -118,19 +109,25 @@ func NewRaftNode(serverId string, cluster []NodeId, config Config) *RaftNode {
 	}
 	go http.Serve(listener, nil)
 
-	// TODO: Dial other nodes --> save *Client (RPC client)
-	for _, nodeId := range r.cluster {
-		if nodeId != r.serverId {
-			r.peers[nodeId] = dialAndConnect(nodeId)
-		}
-	}
-
 	// TODO: other node startup events
 	// go func() {
 	// 	// start election timer
 	// }()
 
 	return r
+}
+
+func (node *RaftNode) connectToCluster() {
+	for _, nodeId := range node.cluster {
+		if nodeId != node.serverId {
+			peerClient, err := rpc.DialHTTPPath("tcp", string(nodeId), "/"+string(nodeId))
+			if err != nil {
+				log.Fatal(err)
+			} else {
+				node.peers[nodeId] = peerClient
+			}
+		}
+	}
 }
 
 // Helper functions for getting states, in case we want to implement persistence / atomic operations
