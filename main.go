@@ -21,8 +21,6 @@ func main() {
 	node2.connectToCluster()
 	node3.connectToCluster()
 
-	node2.setState(Candidate)
-
 	go node1.run()
 	go node2.run()
 	node3.run()

@@ -31,3 +31,9 @@ func (timer *RaftTimer) Stop() {
 		<-timer.inner.C
 	}
 }
+
+func randomTimeout(minVal int, maxVal int) (<-chan time.Time, time.Duration) {
+	randVal := minVal + rand.Intn(maxVal-minVal)
+	randTime := time.Duration(randVal) * time.Millisecond
+	return time.After(randTime), randTime
+}

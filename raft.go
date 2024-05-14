@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -35,20 +36,24 @@ func (s RaftState) String() string {
 }
 
 type LogEntry struct {
-	term Term
+	Term Term
 	// data generic?w 4y
 }
 
 type Config struct {
-	// election timeout in milliseconds
-	ElectionMin int
-	ElectionMax int
+	// Election timeout in milliseconds
+	ElectionTimeoutMin int
+	ElectionTimeoutMax int
+
+	// How often a Leader should send empty Append Entry heartbeats
+	HeartbeatInterval int
 }
 
 func DefaultConfig() Config {
 	return Config{
-		ElectionMin: 150,
-		ElectionMax: 300,
+		ElectionTimeoutMin: 1500,
+		ElectionTimeoutMax: 3000,
+		HeartbeatInterval: 750,
 	}
 }
 
@@ -74,7 +79,9 @@ type RaftNode struct {
 	cluster  []NodeId               // Ids of all servers in the cluster
 	peers    map[NodeId]*rpc.Client // Save RPC clients for all peers
 
-	// Configuration
+	// For followers to know that they are receiving RPCs from other nodes
+	lastContact time.Time
+
 	config Config
 }
 
@@ -92,11 +99,12 @@ func NewRaftNode(serverId string, cluster []NodeId, config Config) *RaftNode {
 	r.leaderId = None[NodeId]()
 	r.cluster = cluster
 	r.peers = make(map[NodeId]*rpc.Client)
+
+	r.lastContact = time.Now()
 	r.config = config
 
-	rpcServer := rpc.NewServer()
-
 	// Register RPC handler and serve immediately
+	rpcServer := rpc.NewServer()
 	rpcServer.Register(r)
 
 	// TODO: handle different grpc paths to run multiple nodes on the same physical server
@@ -157,6 +165,36 @@ func (node *RaftNode) setState(state RaftState) {
 	node.state = state
 }
 
+func (node *RaftNode) getLeaderId() Optional[NodeId] {
+	return node.leaderId
+}
+
+func (node *RaftNode) setLeaderId(leaderId NodeId) {
+	node.leaderId.Set(leaderId)
+}
+
+func (node *RaftNode) getCommitIndex() int {
+	return node.commitIndex
+}
+
+func (node *RaftNode) setCommitIndex(commitIndex int) {
+	node.commitIndex = commitIndex
+}
+
+
+func (node *RaftNode) getLastContact() time.Time {
+	return node.lastContact
+}
+
+func (node *RaftNode) setLastContact(lastContact time.Time) {
+	node.lastContact = lastContact
+}
+
+// Determine if a candidate's log is at least as up-to-date as the receiver's log
+func (node *RaftNode) isCandidateUpToDate(lastLogTerm Term, lastLogIndex int) bool {
+	return lastLogTerm > node.LastLogTerm() || (lastLogTerm == node.LastLogTerm() && lastLogIndex >= node.LastLogIndex())
+}
+
 // Retrieve the index of the last log entry (-1 if no entries)
 func (node *RaftNode) LastLogIndex() int {
 	return len(node.log) - 1
@@ -168,12 +206,7 @@ func (node *RaftNode) LastLogTerm() Term {
 	if lastIndex < 0 {
 		return -1
 	}
-	return node.log[lastIndex].term
-}
-
-// Determine if a candidate's log is at least as up-to-date as the receiver's log
-func (node *RaftNode) isCandidateUpToDate(lastLogTerm Term, lastLogIndex int) bool {
-	return lastLogTerm > node.LastLogTerm() || (lastLogTerm == node.LastLogTerm() && lastLogIndex >= node.LastLogIndex())
+	return node.log[lastIndex].Term
 }
 
 func (node *RaftNode) convertToFollower(term Term) {
@@ -182,6 +215,7 @@ func (node *RaftNode) convertToFollower(term Term) {
 }
 
 func (node *RaftNode) convertToLeader() {
+	log.Debugf("%s converting to leader", string(node.serverId))
 	node.setState(Leader)
 }
 
@@ -199,15 +233,17 @@ func (node *RaftNode) run() {
 	}
 }
 
-// Respond to RPCs from candidates and leaders
-// IF election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
-
 func (node *RaftNode) runFollower() {
-	// https://github.com/hashicorp/raft/blob/main/raft.go#L156C16-L156C27
-	// for ...
-	// break when election timer expires
-
-	// TODO (3): convert to candidate on election timeout without receiving appendentries or granting a vote
+	electionTimer, electionTime := randomTimeout(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
+	for node.getState() == Follower {
+		<-electionTimer
+		if time.Since(node.getLastContact()) > electionTime {
+			node.setState(Candidate)
+			log.Debugf("%s converting to candidate", string(node.serverId))
+			return
+		}
+		electionTimer, electionTime = randomTimeout(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
+	}
 }
 
 func (node *RaftNode) runCandidate() {
@@ -215,15 +251,12 @@ func (node *RaftNode) runCandidate() {
 
 	// Call RequestVote on peers
 	voteChannel := node.startElection()
-	electionTimer := randomTimeout(node.config.ElectionMin, node.config.ElectionMax)
+	electionChannel, _ := randomTimeout(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 
 	voteReceived := 0
 	for node.getState() == Candidate {
 		select {
-		// TODO: case election timer timeout, start new election
-		// TODO: case receive AppendEntries, convert to follower
 		case vote := <-voteChannel:
-			log.Debug("Vote: ", vote)
 			// If RPC response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 			if vote.CurrentTerm > node.getCurrentTerm() {
 				node.convertToFollower(vote.CurrentTerm)
@@ -234,19 +267,16 @@ func (node *RaftNode) runCandidate() {
 				voteReceived++
 			}
 
+			// TODO: what if the election timer stops while we are tallying the last vote?
 			if voteReceived >= (len(node.cluster)+1)/2 {
 				node.convertToLeader()
 				return
 			}
-		case <-electionTimer:
+		case <-electionChannel:
 			log.Info("Election timeout, starting new election")
 			return
 		}
 	}
-}
-
-func (node *RaftNode) runLeader() {
-	// TODO (2): send empty appendentries RPCs
 }
 
 func (node *RaftNode) startElection() <-chan RequestVoteResponse {
@@ -276,6 +306,33 @@ func (node *RaftNode) startElection() <-chan RequestVoteResponse {
 	return voteChannel
 }
 
+func (node *RaftNode) runLeader() {
+	heartbeatTicker := time.NewTicker(time.Duration(node.config.HeartbeatInterval) * time.Millisecond)
+	defer heartbeatTicker.Stop()
+	for {
+		args := AppendEntriesArgs{
+			node.getCurrentTerm(),
+			node.serverId,
+			node.LastLogIndex(),
+			node.LastLogTerm(),
+			make([]LogEntry, 0),
+			node.getCommitIndex(),
+		}
+		log.Debugf("%s sending heartbeats", string(node.serverId))
+		for _, peerClient := range node.peers {
+			go func(c *rpc.Client) {
+				var reply AppendEntriesResponse
+				err := c.Call("RaftNode.AppendEntries", args, &reply)
+				if err != nil {
+					log.Error("AppendEntries error:", err)
+				}
+			}(peerClient)
+		}
+		<-heartbeatTicker.C
+	}
+	// TODO
+}
+
 // RPC logic below
 
 type RequestVoteArgs struct {
@@ -302,20 +359,18 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 	}
 
 	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote (Section 5.4.1)
-
 	if (!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId) && node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex) {
 		node.setVotedFor(args.CandidateId)
 		response.VoteGranted = true
 
-		// TODO: Section 5.2, indicate that during this timeout period, we granted a vote
-		// If election timeout elapses without receiving AppendEntries
-		// RPC from current leader or granting vote to candidate:
-		// convert to candidate
+		// TODO: synch
+		node.setLastContact(time.Now())
 	}
 
 	// If RPC request contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 	if args.CandidateTerm > node.getCurrentTerm() {
 		node.convertToFollower(args.CandidateTerm)
+		response.CurrentTerm = node.getCurrentTerm()
 	}
 
 	*reply = response
@@ -326,7 +381,7 @@ type AppendEntriesArgs struct {
 	LeaderTerm   Term
 	LeaderId     NodeId     // So follower can redirect clients
 	PrevLogIndex int        // Index of log entry immediately preceding new ones
-	PrevLogTerm  int        // Term of prevLogIndex entry
+	PrevLogTerm  Term       // Term of prevLogIndex entry
 	Entries      []LogEntry // Log entries to store (empty for heartbeat; may send more than one for efficiency)
 	LeaderCommit int        // Leader's commit index
 }
@@ -340,8 +395,51 @@ type AppendEntriesResponse struct {
 func (node *RaftNode) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResponse) error {
 	log.Debug("AppendEntries RPC called")
 
+	// TODO: Section 5.2, indicate that during this timeout period, we granted a vote
+	// If election timeout elapses without receiving AppendEntries
+	// RPC from current leader or granting vote to candidate:
+	// convert to candidate
+
 	// TODO (1) ...
 
-	*reply = AppendEntriesResponse{CurrentTerm: node.getCurrentTerm(), Success: false}
+	response := AppendEntriesResponse{CurrentTerm: node.getCurrentTerm(), Success: false}
+
+	// 1. Reply false if term < currentTerm (Section 5.1)
+	if args.LeaderTerm < node.getCurrentTerm() {
+		*reply = response
+		return nil
+	}
+
+	// Section 5.2, convert to follower if term > currentTerm
+	if args.LeaderTerm > node.getCurrentTerm() {
+		node.convertToFollower(args.LeaderTerm)
+		response.CurrentTerm = node.getCurrentTerm()
+	}
+
+	// Save leader id
+	node.setLeaderId(args.LeaderId)
+	log.Debugf("%s received a heartbeat from %s", string(node.serverId), string(args.LeaderId))
+
+	// TODO: 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (Section 5.3)
+
+	// TODO 3. If an existing entry conflicts with a new one (same index but different terms),
+	// delete the existing entry and all that follow it (Section 5.3)
+
+	// TODO 4. Append any new entries not already in the log
+	// if len(args.Entries) > 0 {}
+
+	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	if args.LeaderCommit > 0 && args.LeaderCommit > node.getCommitIndex() {
+		commitIdx := min(args.LeaderCommit, node.LastLogIndex())
+		node.setCommitIndex(commitIdx)
+
+		// TODO: apply logs
+
+	}
+
+	// TODO: synch
+	node.setLastContact(time.Now())
+	response.Success = true
+	*reply = response
 	return nil
 }
