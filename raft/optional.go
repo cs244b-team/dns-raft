@@ -1,4 +1,4 @@
-package main
+package raft
 
 type Optional[T any] struct {
 	value T
