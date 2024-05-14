@@ -7,7 +7,7 @@ import (
 
 type RaftTimer struct {
 	timeout time.Duration
-	c       <-chan time.Time
+	C       <-chan time.Time
 }
 
 func NewRandomTimer(minVal int, maxVal int) *RaftTimer {

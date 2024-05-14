@@ -32,7 +32,7 @@ func (node *RaftNode) startRpcServer() {
 	}
 
 	go http.Serve(listener, nil)
-	log.Infof("Node %s's RPC server started", node.serverId.String())
+	log.Infof("%s's RPC server started", node.serverId.String())
 }
 
 type RequestVoteArgs struct {
@@ -55,7 +55,13 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 
 	// Reply false if term < currentTerm (Section 5.1)
 	if args.CandidateTerm < node.getCurrentTerm() {
-		log.Debugf("%s rejecting vote request from %s because candidate term %d < current term %d", node.serverId.String(), args.CandidateId.String(), args.CandidateTerm, node.getCurrentTerm())
+		log.Debugf(
+			"%s rejecting vote request from %s because candidate term %d < current term %d",
+			node.serverId.String(),
+			args.CandidateId.String(),
+			args.CandidateTerm,
+			node.getCurrentTerm(),
+		)
 		*reply = response
 		return nil
 	}
@@ -73,7 +79,12 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 
 	// If RPC request contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 	if args.CandidateTerm > node.getCurrentTerm() {
-		log.Debugf("%s converting to follower since received a vote request with higher term %d than current term %d", node.serverId.String(), args.CandidateTerm, node.getCurrentTerm())
+		log.Debugf(
+			"%s converting to follower because candidate term %d > current term %d",
+			node.serverId.String(),
+			args.CandidateTerm,
+			node.getCurrentTerm(),
+		)
 		node.convertToFollower(args.CandidateTerm)
 		response.CurrentTerm = node.getCurrentTerm()
 	}
@@ -111,7 +122,13 @@ func (node *RaftNode) AppendEntries(args AppendEntriesArgs, reply *AppendEntries
 
 	// 1. Reply false if term < currentTerm (Section 5.1)
 	if args.LeaderTerm < node.getCurrentTerm() {
-		log.Debugf("%s rejecting AppendEntries request from %s because leader term %d < current term %d", node.serverId.String(), args.LeaderId.String(), args.LeaderTerm, node.getCurrentTerm())
+		log.Debugf(
+			"%s rejecting AppendEntries request from %s because leader term %d < current term %d",
+			node.serverId.String(),
+			args.LeaderId.String(),
+			args.LeaderTerm,
+			node.getCurrentTerm(),
+		)
 		*reply = response
 		return nil
 	}

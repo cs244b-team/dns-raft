@@ -37,9 +37,9 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		ElectionTimeoutMin: 1500,
-		ElectionTimeoutMax: 3000,
-		HeartbeatInterval:  750,
+		ElectionTimeoutMin: 150,
+		ElectionTimeoutMax: 300,
+		HeartbeatInterval:  75,
 	}
 }
 
@@ -122,7 +122,12 @@ func (node *RaftNode) ConnectToCluster() {
 		if nodeId != node.serverId {
 			client, err := rpc.DialHTTPPath("tcp", rpcServerAddress(nodeId), rpcServerPath(nodeId))
 			if err != nil {
-				log.Fatalf("%s failed to connect to %s, reason: %s", node.serverId.String(), nodeId.String(), err)
+				log.Fatalf(
+					"%s failed to connect to %s, reason: %s",
+					node.serverId.String(),
+					nodeId.String(),
+					err,
+				)
 			} else {
 				node.peerClients[nodeId] = client
 				log.Debugf("%s connected to %s", node.serverId.String(), nodeId.String())
@@ -217,7 +222,7 @@ func (node *RaftNode) runFollower() {
 	// electionTimer, electionTime := randomTimeout(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 	for node.getState() == Follower {
-		<-electionTimer.c
+		<-electionTimer.C
 		if time.Since(node.getLastContact()) > electionTimer.timeout {
 			node.convertToCandidate()
 			return
@@ -231,29 +236,42 @@ func (node *RaftNode) runCandidate() {
 	voteChannel := node.startElection()
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 
-	voteReceived := 0
+	votesReceived := 0
 	for node.getState() == Candidate {
 		select {
 		case vote := <-voteChannel:
 			// If RPC response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 			if vote.CurrentTerm > node.getCurrentTerm() {
-				log.Debugf("%s received vote with higher term %d, converting to follower", node.serverId.String(), vote.CurrentTerm)
+				log.Debugf(
+					"%s received vote with higher term %d, converting to follower",
+					node.serverId.String(),
+					vote.CurrentTerm,
+				)
 				node.convertToFollower(vote.CurrentTerm)
 				return
 			}
 
 			if vote.VoteGranted {
-				voteReceived++
+				votesReceived++
 			}
 
 			// TODO: what if the election timer stops while we are tallying the last vote?
-			if voteReceived >= (len(node.cluster)+1)/2 {
-				log.Infof("%s received majority of votes (%d/%d), converting to leader", node.serverId.String(), voteReceived, len(node.cluster))
+			if votesReceived >= (len(node.cluster)+1)/2 {
+				log.Infof(
+					"%s received majority of votes (%d/%d), converting to leader",
+					node.serverId.String(),
+					votesReceived,
+					len(node.cluster),
+				)
 				node.convertToLeader()
 				return
 			}
-		case <-electionTimer.c:
-			log.Debugf("%s election timer expired after %d ms", node.serverId.String(), electionTimer.timeout)
+		case <-electionTimer.C:
+			log.Debugf(
+				"%s election timer expired after %d ms",
+				node.serverId.String(),
+				electionTimer.timeout,
+			)
 			return
 		}
 	}
@@ -290,18 +308,23 @@ func (node *RaftNode) startElection() <-chan RequestVoteResponse {
 }
 
 func (node *RaftNode) runLeader() {
-	heartbeatTicker := time.NewTicker(time.Duration(node.config.HeartbeatInterval) * time.Millisecond)
+	heartbeatTicker := time.NewTicker(
+		time.Duration(node.config.HeartbeatInterval) * time.Millisecond,
+	)
 	defer heartbeatTicker.Stop()
 	for {
 		log.Debugf("%s sending heartbeat", node.serverId.String())
-
 		args := node.makeAppendEntries()
 		for _, client := range node.peerClients {
 			go func(c *rpc.Client) {
 				var reply AppendEntriesResponse
 				err := c.Call("RaftNode.AppendEntries", args, &reply)
 				if err != nil {
-					log.Errorf("%s experienced AppendEntries error: %s", node.serverId.String(), err)
+					log.Errorf(
+						"%s experienced AppendEntries error: %s",
+						node.serverId.String(),
+						err,
+					)
 				}
 			}(client)
 		}
