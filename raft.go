@@ -1,11 +1,11 @@
 package main
 
 import (
-	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/rpc"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type Term int
@@ -112,6 +112,8 @@ func NewRaftNode(serverId string, cluster []NodeId, config Config) *RaftNode {
 	// TODO: other node startup events
 	// go func() {
 	// 	// start election timer
+	//  // wait for timer to stop
+	//  //
 	// }()
 
 	return r
@@ -122,7 +124,7 @@ func (node *RaftNode) connectToCluster() {
 		if nodeId != node.serverId {
 			peerClient, err := rpc.DialHTTPPath("tcp", string(nodeId), "/"+string(nodeId))
 			if err != nil {
-				log.Fatal(err)
+				log.Error(err)
 			} else {
 				node.peers[nodeId] = peerClient
 			}
@@ -180,7 +182,6 @@ func (node *RaftNode) convertToFollower(term Term) {
 }
 
 func (node *RaftNode) convertToLeader() {
-	println(node.serverId + " became leader!")
 	node.setState(Leader)
 }
 
@@ -205,18 +206,24 @@ func (node *RaftNode) runFollower() {
 	// https://github.com/hashicorp/raft/blob/main/raft.go#L156C16-L156C27
 	// for ...
 	// break when election timer expires
+
+	// TODO (3): convert to candidate on election timeout without receiving appendentries or granting a vote
 }
 
 func (node *RaftNode) runCandidate() {
+	log.Debugf("%s became candidate", string(node.serverId))
+
 	// Call RequestVote on peers
 	voteChannel := node.startElection()
+	electionTimer := randomTimeout(node.config.ElectionMin, node.config.ElectionMax)
+
 	voteReceived := 0
 	for node.getState() == Candidate {
 		select {
 		// TODO: case election timer timeout, start new election
 		// TODO: case receive AppendEntries, convert to follower
 		case vote := <-voteChannel:
-			fmt.Println("Vote:", vote)
+			log.Debug("Vote: ", vote)
 			// If RPC response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 			if vote.CurrentTerm > node.getCurrentTerm() {
 				node.convertToFollower(vote.CurrentTerm)
@@ -231,12 +238,15 @@ func (node *RaftNode) runCandidate() {
 				node.convertToLeader()
 				return
 			}
+		case <-electionTimer:
+			log.Info("Election timeout, starting new election")
+			return
 		}
 	}
 }
 
 func (node *RaftNode) runLeader() {
-
+	// TODO (2): send empty appendentries RPCs
 }
 
 func (node *RaftNode) startElection() <-chan RequestVoteResponse {
@@ -250,8 +260,6 @@ func (node *RaftNode) startElection() <-chan RequestVoteResponse {
 	node.votedFor = New[NodeId](node.serverId)
 	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true}
 
-	// TODO: restart timer
-
 	// Request votes from all peers in parallel
 	args := RequestVoteArgs{node.currentTerm, node.serverId, node.LastLogIndex(), node.LastLogTerm()}
 	for _, peerClient := range node.peers {
@@ -259,7 +267,7 @@ func (node *RaftNode) startElection() <-chan RequestVoteResponse {
 			var reply RequestVoteResponse
 			err := c.Call("RaftNode.RequestVote", args, &reply)
 			if err != nil {
-				log.Fatal("RequestVote error:", err)
+				log.Error("RequestVote error:", err)
 			}
 			voteChannel <- reply
 		}(peerClient)
@@ -284,7 +292,7 @@ type RequestVoteResponse struct {
 
 // Invoked by candidates to gather votes, not called directly by this RaftNode (Section 5.2)
 func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) error {
-	println("RequestVote RPC called")
+	log.Debug("RequestVote RPC called")
 	response := RequestVoteResponse{CurrentTerm: node.getCurrentTerm(), VoteGranted: false}
 
 	// Reply false if term < currentTerm (Section 5.1)
@@ -294,10 +302,6 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 	}
 
 	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote (Section 5.4.1)
-	fmt.Println(
-		!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId,
-		node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex),
-	)
 
 	if (!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId) && node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex) {
 		node.setVotedFor(args.CandidateId)
@@ -334,7 +338,10 @@ type AppendEntriesResponse struct {
 
 // Invoked by leader to replicate log entries (Section 5.3); also used as a heartbeat
 func (node *RaftNode) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResponse) error {
-	println("AppendEntries RPC called")
+	log.Debug("AppendEntries RPC called")
+
+	// TODO (1) ...
+
 	*reply = AppendEntriesResponse{CurrentTerm: node.getCurrentTerm(), Success: false}
 	return nil
 }

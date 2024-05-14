@@ -1,8 +1,14 @@
 package main
 
+import (
+	log "github.com/sirupsen/logrus"
+)
+
 // TODO ./raft --listen-port 9000 --config ...
 
 func main() {
+	log.SetLevel(log.DebugLevel)
+
 	cluster := []NodeId{"127.0.0.1:9000", "127.0.0.1:9001", "127.0.0.1:9002"}
 
 	config := DefaultConfig()
