@@ -287,7 +287,7 @@ func (node *RaftNode) startElection() <-chan RequestVoteResponse {
 	node.setCurrentTerm(node.getCurrentTerm() + 1)
 
 	// Vote for self
-	node.votedFor = New(node.serverId)
+	node.votedFor = Some(node.serverId)
 	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true}
 
 	// Request votes from all peers in parallel

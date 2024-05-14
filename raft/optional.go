@@ -2,28 +2,28 @@ package raft
 
 type Optional[T any] struct {
 	value T
-	valid bool
+	set   bool
 }
 
-func New[T any](v T) Optional[T] {
-	return Optional[T]{value: v, valid: true}
+func Some[T any](v T) Optional[T] {
+	return Optional[T]{value: v, set: true}
 }
 
 func None[T any]() Optional[T] {
-	return Optional[T]{valid: false}
+	return Optional[T]{set: false}
 }
 
 func (opt *Optional[T]) Set(value T) {
 	opt.value = value
-	opt.valid = true
+	opt.set = true
 }
 
 func (opt Optional[T]) HasValue() bool {
-	return opt.valid
+	return opt.set
 }
 
 func (opt Optional[T]) Value() T {
-	if !opt.valid {
+	if !opt.set {
 		panic("Tried to get an unset optional.")
 	}
 	return opt.value
