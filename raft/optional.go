@@ -28,3 +28,10 @@ func (opt Optional[T]) Value() T {
 	}
 	return opt.value
 }
+
+func (opt Optional[T]) ValueOr(defaultValue T) T {
+	if !opt.set {
+		return defaultValue
+	}
+	return opt.value
+}
