@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -9,56 +10,53 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func rpcServerAddress(id NodeId) string {
-	return id.String()
+func rpcServerPath(id int) string {
+	return fmt.Sprintf("/raft/%d", id)
 }
 
-func rpcServerPath(id NodeId) string {
-	return "/" + id.String()
+func rpcServerDebugPath(id int) string {
+	return fmt.Sprintf("/debug/raft/%d", id)
 }
 
-func rpcServerDebugPath(id NodeId) string {
-	return "/debug/" + id.String()
-}
-
-func (node *RaftNode) startRpcServer() {
+func (node *Node) startRpcServer() {
 	server := rpc.NewServer()
 	server.Register(node)
 	server.HandleHTTP(rpcServerPath(node.serverId), rpcServerDebugPath(node.serverId))
 
-	listener, err := net.Listen("tcp", rpcServerAddress(node.serverId))
+	address := node.cluster[node.serverId].String()
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		log.Fatal("Listen error: ", err)
 	}
 
 	go http.Serve(listener, nil)
-	log.Infof("%s's RPC server started", node.serverId.String())
+	log.Infof("node-%d RPC server started on %s", node.serverId, address)
 }
 
 type RequestVoteArgs struct {
-	CandidateTerm Term
-	CandidateId   NodeId
+	CandidateTerm int
+	CandidateId   int
 	LastLogIndex  int
-	LastLogTerm   Term
+	LastLogTerm   int
 }
 
 type RequestVoteResponse struct {
-	CurrentTerm Term
+	CurrentTerm int
 	VoteGranted bool
 }
 
 // Invoked by candidates to gather votes, not called directly by this RaftNode (Section 5.2)
-func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) error {
-	log.Debugf("%s received vote request from %s", node.serverId.String(), args.CandidateId.String())
+func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) error {
+	log.Debugf("node-%d received vote request from node-%d", node.serverId, args.CandidateId)
 
 	response := RequestVoteResponse{CurrentTerm: node.getCurrentTerm(), VoteGranted: false}
 
 	// Reply false if term < currentTerm (Section 5.1)
 	if args.CandidateTerm < node.getCurrentTerm() {
 		log.Debugf(
-			"%s rejecting vote request from %s because candidate term %d < current term %d",
-			node.serverId.String(),
-			args.CandidateId.String(),
+			"node-%d rejecting vote request from node-%d because candidate term %d < current term %d",
+			node.serverId,
+			args.CandidateId,
 			args.CandidateTerm,
 			node.getCurrentTerm(),
 		)
@@ -68,7 +66,7 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 
 	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote (Section 5.4.1)
 	if (!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId) && node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex) {
-		log.Debugf("%s granting vote to %s", node.serverId.String(), args.CandidateId.String())
+		log.Debugf("node-%d granting vote to node-%d", node.serverId, args.CandidateId)
 
 		node.setVotedFor(args.CandidateId)
 		response.VoteGranted = true
@@ -80,8 +78,8 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 	// If RPC request contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 	if args.CandidateTerm > node.getCurrentTerm() {
 		log.Debugf(
-			"%s converting to follower because candidate term %d > current term %d",
-			node.serverId.String(),
+			"node-%d converting to follower because candidate term %d > current term %d",
+			node.serverId,
 			args.CandidateTerm,
 			node.getCurrentTerm(),
 		)
@@ -94,22 +92,22 @@ func (node *RaftNode) RequestVote(args RequestVoteArgs, reply *RequestVoteRespon
 }
 
 type AppendEntriesArgs struct {
-	LeaderTerm   Term
-	LeaderId     NodeId     // So follower can redirect clients
+	LeaderTerm   int
+	LeaderId     int        // So follower can redirect clients
 	PrevLogIndex int        // Index of log entry immediately preceding new ones
-	PrevLogTerm  Term       // Term of prevLogIndex entry
+	PrevLogTerm  int        // Term of prevLogIndex entry
 	Entries      []LogEntry // Log entries to store (empty for heartbeat; may send more than one for efficiency)
 	LeaderCommit int        // Leader's commit index
 }
 
 type AppendEntriesResponse struct {
-	CurrentTerm Term
+	CurrentTerm int
 	Success     bool
 }
 
 // Invoked by leader to replicate log entries (Section 5.3); also used as a heartbeat
-func (node *RaftNode) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResponse) error {
-	log.Debugf("%s received append entries request from %s", node.serverId.String(), args.LeaderId.String())
+func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResponse) error {
+	log.Debugf("node-%d received append entries request from node-%d", node.serverId, args.LeaderId)
 
 	// TODO: Section 5.2, indicate that during this timeout period, we granted a vote
 	// If election timeout elapses without receiving AppendEntries
@@ -123,9 +121,9 @@ func (node *RaftNode) AppendEntries(args AppendEntriesArgs, reply *AppendEntries
 	// 1. Reply false if term < currentTerm (Section 5.1)
 	if args.LeaderTerm < node.getCurrentTerm() {
 		log.Debugf(
-			"%s rejecting AppendEntries request from %s because leader term %d < current term %d",
-			node.serverId.String(),
-			args.LeaderId.String(),
+			"node-%d rejecting AppendEntries request from node-%d because leader term %d < current term %d",
+			node.serverId,
+			args.LeaderId,
 			args.LeaderTerm,
 			node.getCurrentTerm(),
 		)

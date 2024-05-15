@@ -1,90 +1,46 @@
 package raft
 
 import (
-	"fmt"
-	"net/rpc"
-	"strconv"
-	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-type RaftState uint32
+type NodeState uint32
 
 const (
-	Follower RaftState = iota // default
+	Follower NodeState = iota // default
 	Candidate
 	Leader
 	Shutdown
 )
 
-type Term int
-
 type LogEntry struct {
-	Term Term
+	Term int
 	// data generic?w 4y
 }
 
-type Config struct {
-	// Election timeout in milliseconds
-	ElectionTimeoutMin int
-	ElectionTimeoutMax int
-
-	// How often a Leader should send empty Append Entry heartbeats
-	HeartbeatInterval int
-}
-
-func DefaultConfig() Config {
-	return Config{
-		ElectionTimeoutMin: 150,
-		ElectionTimeoutMax: 300,
-		HeartbeatInterval:  75,
-	}
-}
-
-type NodeId struct {
-	Ip   string
-	Port uint16
-}
-
-func (n NodeId) String() string {
-	return n.Ip + ":" + fmt.Sprintf("%d", n.Port)
-}
-
-func NodeIdFromString(s string) (NodeId, error) {
-	ip := strings.Split(s, ":")[0]
-	port := strings.Split(s, ":")[1]
-
-	port_uint, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return NodeId{}, err
-	}
-
-	return NodeId{Ip: ip, Port: uint16(port_uint)}, nil
-}
-
-type RaftNode struct {
+type Node struct {
 	// Persistent state on all servers
 	// TODO: make these persistent
-	currentTerm Term             // Latest term server has seen (init to zero)
-	votedFor    Optional[NodeId] // Candidate id that received vote in current term (invalid optional if none)
-	log         []LogEntry       // Each entry contains command for state machine, and term when entry was received by leader (first index is 0!)
+	currentTerm int           // Latest term server has seen (init to zero)
+	votedFor    Optional[int] // Candidate id that received vote in current term (invalid optional if none)
+	log         []LogEntry    // Each entry contains command for state machine, and term when entry was received by leader (first index is 0!)
 
 	// Volatile state on all servers
 	commitIndex int // Index of highest log entry known to be committed (initialized to 0)
 	lastApplied int // Index of highest log entry applied to state machine (initialized to 0)
-	state       RaftState
+	state       NodeState
 
 	// Volatile state on leaders
-	nextIndex  map[NodeId]int // For each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
-	matchIndex map[NodeId]int // For each server, index of highest log entry known to be replicated on server
+	nextIndex  map[int]int // For each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+	matchIndex map[int]int // For each server, index of highest log entry known to be replicated on server
 
 	// Server and cluster state
-	serverId    NodeId                 // the id of this server
-	leaderId    Optional[NodeId]       // the id of the leader
-	cluster     []NodeId               // Ids of all servers in the cluster
-	peerClients map[NodeId]*rpc.Client // Save RPC clients for all peers
+	serverId int           // the id of this server
+	leaderId Optional[int] // the id of the leader
+	cluster  []Address     // List of all node addresses in the cluster
+	peers    []*Peer       // Peer information and RPC clients
 
 	// For followers to know that they are receiving RPCs from other nodes
 	lastContact time.Time
@@ -93,23 +49,30 @@ type RaftNode struct {
 	config Config
 }
 
-func NewRaftNode(serverId NodeId, cluster []NodeId, config Config) *RaftNode {
-	r := new(RaftNode)
+func NewNode(serverId int, cluster []Address, config Config) *Node {
+	r := new(Node)
 
 	r.currentTerm = 0
-	r.votedFor = None[NodeId]()
+	r.votedFor = None[int]()
 	r.log = make([]LogEntry, 0)
 	r.commitIndex = 0
 	r.lastApplied = 0
 	r.state = Follower
-	r.nextIndex = make(map[NodeId]int)
-	r.matchIndex = make(map[NodeId]int)
-	r.serverId = NodeId(serverId)
-	r.leaderId = None[NodeId]()
+	r.nextIndex = make(map[int]int)
+	r.matchIndex = make(map[int]int)
+	r.serverId = int(serverId)
+	r.leaderId = None[int]()
 	r.cluster = cluster
-	r.peerClients = make(map[NodeId]*rpc.Client)
+	r.peers = make([]*Peer, 0)
 	r.lastContact = time.Now()
 	r.config = config
+
+	// Create list of peers
+	for i, address := range r.cluster {
+		if i != serverId {
+			r.peers = append(r.peers, NewPeer(i, address))
+		}
+	}
 
 	// Register RPC handler and serve immediately
 	r.startRpcServer()
@@ -117,86 +80,78 @@ func NewRaftNode(serverId NodeId, cluster []NodeId, config Config) *RaftNode {
 	return r
 }
 
-func (node *RaftNode) ConnectToCluster() {
-	for _, nodeId := range node.cluster {
-		if nodeId != node.serverId {
-			client, err := rpc.DialHTTPPath("tcp", rpcServerAddress(nodeId), rpcServerPath(nodeId))
-			if err != nil {
-				log.Fatalf(
-					"%s failed to connect to %s, reason: %s",
-					node.serverId.String(),
-					nodeId.String(),
-					err,
-				)
-			} else {
-				node.peerClients[nodeId] = client
-				log.Debugf("%s connected to %s", node.serverId.String(), nodeId.String())
-			}
+func (node *Node) ConnectToCluster() {
+	for _, peer := range node.peers {
+		err := peer.Connect()
+		if err != nil {
+			log.Fatalf("node-%d failed to connect to node-%d, reason: %s", node.serverId, peer.id, err)
+		} else {
+			log.Debugf("node-%d connected to node-%d", node.serverId, peer.id)
 		}
 	}
 }
 
 // Helper functions for getting states, in case we want to implement persistence / atomic operations
-func (node *RaftNode) getVotedFor() Optional[NodeId] {
+func (node *Node) getVotedFor() Optional[int] {
 	return node.votedFor
 }
 
-func (node *RaftNode) setVotedFor(votedFor NodeId) {
+func (node *Node) setVotedFor(votedFor int) {
 	node.votedFor.Set(votedFor)
 }
 
-func (node *RaftNode) getCurrentTerm() Term {
+func (node *Node) getCurrentTerm() int {
 	return node.currentTerm
 }
 
-func (node *RaftNode) setCurrentTerm(currentTerm Term) {
+func (node *Node) setCurrentTerm(currentTerm int) {
 	node.currentTerm = currentTerm
 }
 
-func (node *RaftNode) getState() RaftState {
+func (node *Node) getState() NodeState {
 	return node.state
 }
 
-func (node *RaftNode) setState(state RaftState) {
+func (node *Node) setState(state NodeState) {
 	node.state = state
 }
 
-func (node *RaftNode) getLeaderId() Optional[NodeId] {
+func (node *Node) getLeaderId() Optional[int] {
 	return node.leaderId
 }
 
-func (node *RaftNode) setLeaderId(leaderId NodeId) {
+func (node *Node) setLeaderId(leaderId int) {
 	node.leaderId.Set(leaderId)
 }
 
-func (node *RaftNode) getCommitIndex() int {
+func (node *Node) getCommitIndex() int {
 	return node.commitIndex
 }
 
-func (node *RaftNode) setCommitIndex(commitIndex int) {
+func (node *Node) setCommitIndex(commitIndex int) {
 	node.commitIndex = commitIndex
 }
 
-func (node *RaftNode) getLastContact() time.Time {
+func (node *Node) getLastContact() time.Time {
 	return node.lastContact
 }
 
-func (node *RaftNode) setLastContact(lastContact time.Time) {
+func (node *Node) setLastContact(lastContact time.Time) {
 	node.lastContact = lastContact
 }
 
 // Determine if a candidate's log is at least as up-to-date as the receiver's log
-func (node *RaftNode) isCandidateUpToDate(lastLogTerm Term, lastLogIndex int) bool {
+func (node *Node) isCandidateUpToDate(lastLogTerm int, lastLogIndex int) bool {
 	return lastLogTerm > node.lastLogTerm() || (lastLogTerm == node.lastLogTerm() && lastLogIndex >= node.lastLogIndex())
 }
 
 // Retrieve the index of the last log entry (-1 if no entries)
-func (node *RaftNode) lastLogIndex() int {
+func (node *Node) lastLogIndex() int {
 	return len(node.log) - 1
 }
 
 // Retrieve the term of the last log entry (-1 if no entries)
-func (node *RaftNode) lastLogTerm() Term {
+func (node *Node) lastLogTerm() int {
 	lastIndex := node.lastLogIndex()
 	if lastIndex < 0 {
 		return -1
@@ -205,7 +160,7 @@ func (node *RaftNode) lastLogTerm() Term {
 }
 
 // Main event loop for this RaftNode
-func (node *RaftNode) Run() {
+func (node *Node) Run() {
 	for {
 		switch node.getState() {
 		case Follower:
@@ -218,7 +173,7 @@ func (node *RaftNode) Run() {
 	}
 }
 
-func (node *RaftNode) runFollower() {
+func (node *Node) runFollower() {
 	// electionTimer, electionTime := randomTimeout(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 	for node.getState() == Follower {
@@ -231,7 +186,7 @@ func (node *RaftNode) runFollower() {
 	}
 }
 
-func (node *RaftNode) runCandidate() {
+func (node *Node) runCandidate() {
 	// Call RequestVote on peers
 	voteChannel := node.startElection()
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
@@ -243,8 +198,8 @@ func (node *RaftNode) runCandidate() {
 			// If RPC response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 			if vote.CurrentTerm > node.getCurrentTerm() {
 				log.Debugf(
-					"%s received vote with higher term %d, converting to follower",
-					node.serverId.String(),
+					"node-%d received vote with higher term %d, converting to follower",
+					node.serverId,
 					vote.CurrentTerm,
 				)
 				node.convertToFollower(vote.CurrentTerm)
@@ -258,8 +213,8 @@ func (node *RaftNode) runCandidate() {
 			// TODO: what if the election timer stops while we are tallying the last vote?
 			if votesReceived >= (len(node.cluster)+1)/2 {
 				log.Infof(
-					"%s received majority of votes (%d/%d), converting to leader",
-					node.serverId.String(),
+					"node-%d received majority of votes (%d/%d), converting to leader",
+					node.serverId,
 					votesReceived,
 					len(node.cluster),
 				)
@@ -268,17 +223,17 @@ func (node *RaftNode) runCandidate() {
 			}
 		case <-electionTimer.C:
 			log.Debugf(
-				"%s election timer expired after %d ms",
-				node.serverId.String(),
-				electionTimer.timeout,
+				"node-%d election timer expired after %d ms",
+				node.serverId,
+				electionTimer.timeout/time.Millisecond,
 			)
 			return
 		}
 	}
 }
 
-func (node *RaftNode) startElection() <-chan RequestVoteResponse {
-	log.Debugf("%s is starting election", node.serverId.String())
+func (node *Node) startElection() <-chan RequestVoteResponse {
+	log.Debugf("node-%d is starting election", node.serverId)
 
 	// Create a vote response channel
 	voteChannel := make(chan RequestVoteResponse, len(node.cluster))
@@ -292,71 +247,62 @@ func (node *RaftNode) startElection() <-chan RequestVoteResponse {
 
 	// Request votes from all peers in parallel
 	args := RequestVoteArgs{node.currentTerm, node.serverId, node.lastLogIndex(), node.lastLogTerm()}
-	for id, client := range node.peerClients {
-		go func(id NodeId, c *rpc.Client) {
-			var reply RequestVoteResponse
-			log.Debugf("%s requesting vote from %s", node.serverId.String(), id.String())
-			err := c.Call("RaftNode.RequestVote", args, &reply)
+	for _, peer := range node.peers {
+		go func(p *Peer) {
+			log.Debugf("node-%d requesting vote from node-%d", node.serverId, p.id)
+			reply, err := p.RequestVote(args)
 			if err != nil {
-				log.Errorf("%s experienced RequestVote error: %s", node.serverId.String(), err)
+				log.Errorf("node-%d experienced RequestVote error: %s", node.serverId, err)
 			}
 			voteChannel <- reply
-		}(id, client)
+		}(peer)
 	}
 
 	return voteChannel
 }
 
-func (node *RaftNode) runLeader() {
+func (node *Node) runLeader() {
 	heartbeatTicker := time.NewTicker(
 		time.Duration(node.config.HeartbeatInterval) * time.Millisecond,
 	)
 	defer heartbeatTicker.Stop()
 	for {
-		log.Debugf("%s sending heartbeat", node.serverId.String())
-		args := node.makeAppendEntries()
-		for _, client := range node.peerClients {
-			go func(c *rpc.Client) {
-				var reply AppendEntriesResponse
-				err := c.Call("RaftNode.AppendEntries", args, &reply)
+		args := AppendEntriesArgs{
+			node.getCurrentTerm(),
+			node.serverId,
+			node.lastLogIndex(),
+			node.lastLogTerm(),
+			make([]LogEntry, 0),
+			node.getCommitIndex(),
+		}
+
+		log.Debugf("node-%d sending heartbeats", node.serverId)
+		for _, peer := range node.peers {
+			go func(p *Peer) {
+				_, err := p.AppendEntries(args)
 				if err != nil {
-					log.Errorf(
-						"%s experienced AppendEntries error: %s",
-						node.serverId.String(),
-						err,
-					)
+					log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
 				}
-			}(client)
+			}(peer)
 		}
 		<-heartbeatTicker.C
 	}
 	// TODO
 }
 
-func (node *RaftNode) makeAppendEntries() AppendEntriesArgs {
-	return AppendEntriesArgs{
-		node.getCurrentTerm(),
-		node.serverId,
-		node.lastLogIndex(),
-		node.lastLogTerm(),
-		make([]LogEntry, 0),
-		node.getCommitIndex(),
-	}
-}
-
 // State conversion functions
-func (node *RaftNode) convertToFollower(term Term) {
-	log.Infof("%s converting to follower", node.serverId.String())
+func (node *Node) convertToFollower(term int) {
+	log.Infof("node-%d converting to follower", node.serverId)
 	node.setCurrentTerm(term)
 	node.setState(Follower)
 }
 
-func (node *RaftNode) convertToCandidate() {
-	log.Infof("%s converting to candidate", node.serverId.String())
+func (node *Node) convertToCandidate() {
+	log.Infof("node-%d converting to candidate", node.serverId)
 	node.setState(Candidate)
 }
 
-func (node *RaftNode) convertToLeader() {
-	log.Infof("%s converting to leader", node.serverId.String())
+func (node *Node) convertToLeader() {
+	log.Infof("node-%d converting to leader", node.serverId)
 	node.setState(Leader)
 }
