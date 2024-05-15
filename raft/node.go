@@ -3,6 +3,7 @@ package raft
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -23,9 +24,11 @@ type Node struct {
 	log     []*LogEntry
 	// log     *StableLog
 
+	lastLogLock sync.Mutex
+
 	// Volatile state on all servers
-	commitIndex int // Index of highest log entry known to be committed (initialized to 0)
-	lastApplied int // Index of highest log entry applied to state machine (initialized to 0)
+	commitIndex atomic.Int32 // Index of highest log entry known to be committed (initialized to 0)
+	lastApplied atomic.Int32 // Index of highest log entry applied to state machine (initialized to 0)
 	status      NodeStatus
 
 	// Volatile state on leaders
@@ -33,10 +36,10 @@ type Node struct {
 	matchIndex map[int]int // For each server, index of highest log entry known to be replicated on server
 
 	// Server and cluster state
-	serverId int           // the id of this server
-	leaderId Optional[int] // the id of the leader
-	cluster  []Address     // List of all node addresses in the cluster
-	peers    []*Peer       // Peer information and RPC clients
+	serverId int          // the id of this server
+	leaderId atomic.Int32 // the id of the leader, or -1 if unknown
+	cluster  []Address    // List of all node addresses in the cluster
+	peers    []*Peer      // Peer information and RPC clients
 
 	// For followers to know that they are receiving RPCs from other nodes
 	lastContact     time.Time
@@ -55,15 +58,15 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 
 	r.log = make([]*LogEntry, 0)
 
-	r.commitIndex = 0
-	r.lastApplied = 0
+	r.commitIndex.Store(0)
+	r.lastApplied.Store(0)
 	r.status = Follower
 
 	r.nextIndex = make(map[int]int)
 	r.matchIndex = make(map[int]int)
 
 	r.serverId = int(serverId)
-	r.leaderId = None[int]()
+	r.leaderId.Store(-1)
 	r.cluster = cluster
 	r.peers = make([]*Peer, 0)
 
@@ -126,28 +129,37 @@ func (node *Node) setVotedFor(votedFor int) {
 	}
 }
 
-func (node *Node) getState() NodeStatus {
-	return node.status
+func (node *Node) getStatus() NodeStatus {
+	return NodeStatus(atomic.LoadUint32((*uint32)(&node.status)))
 }
 
-func (node *Node) setState(state NodeStatus) {
-	node.status = state
+func (node *Node) setStatus(status NodeStatus) {
+	statusAddr := (*uint32)(&node.status)
+	atomic.StoreUint32(statusAddr, uint32(status))
 }
 
-func (node *Node) getLeaderId() Optional[int] {
-	return node.leaderId
+func (node *Node) getLeaderId() int {
+	return int(node.leaderId.Load())
 }
 
 func (node *Node) setLeaderId(leaderId int) {
-	node.leaderId.Set(leaderId)
+	node.leaderId.Store(int32(leaderId))
 }
 
 func (node *Node) getCommitIndex() int {
-	return node.commitIndex
+	return int(node.commitIndex.Load())
 }
 
 func (node *Node) setCommitIndex(commitIndex int) {
-	node.commitIndex = commitIndex
+	node.commitIndex.Store(int32(commitIndex))
+}
+
+func (node *Node) getLastApplied() int {
+	return int(node.lastApplied.Load())
+}
+
+func (node *Node) setLastApplied(lastApplied int) {
+	node.lastApplied.Store(int32(lastApplied))
 }
 
 func (node *Node) getLastContact() time.Time {
@@ -164,27 +176,27 @@ func (node *Node) setLastContact(lastContact time.Time) {
 
 // Determine if a candidate's log is at least as up-to-date as the receiver's log
 func (node *Node) isCandidateUpToDate(lastLogTerm int, lastLogIndex int) bool {
-	return lastLogTerm > node.lastLogTerm() || (lastLogTerm == node.lastLogTerm() && lastLogIndex >= node.lastLogIndex())
+	idx, term := node.lastLogIndexAndTerm()
+	return lastLogTerm > term || (lastLogTerm == term && lastLogIndex >= idx)
 }
 
-// Retrieve the index of the last log entry (-1 if no entries)
-func (node *Node) lastLogIndex() int {
-	return len(node.log) - 1
-}
+// Retrieve the index and the term of the last log entry (-1 if no entries)
+func (node *Node) lastLogIndexAndTerm() (int, int) {
+	node.lastLogLock.Lock()
+	defer node.lastLogLock.Unlock()
 
-// Retrieve the term of the last log entry (-1 if no entries)
-func (node *Node) lastLogTerm() int {
-	lastIndex := node.lastLogIndex()
+	lastIndex := len(node.log) - 1
 	if lastIndex < 0 {
-		return -1
+		return -1, -1
 	}
-	return node.log[lastIndex].Term
+
+	return lastIndex, node.log[lastIndex].Term
 }
 
 // Main event loop for this RaftNode
 func (node *Node) Run() {
 	for {
-		switch node.getState() {
+		switch node.getStatus() {
 		case Follower:
 			node.runFollower()
 		case Candidate:
@@ -197,7 +209,7 @@ func (node *Node) Run() {
 
 func (node *Node) runFollower() {
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
-	for node.getState() == Follower {
+	for node.getStatus() == Follower {
 		<-electionTimer.C
 		if time.Since(node.getLastContact()) > electionTimer.timeout {
 			node.convertToCandidate()
@@ -213,7 +225,7 @@ func (node *Node) runCandidate() {
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 
 	votesReceived := 0
-	for node.getState() == Candidate {
+	for node.getStatus() == Candidate {
 		select {
 		case vote := <-voteChannel:
 			// If RPC response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
@@ -267,7 +279,8 @@ func (node *Node) startElection() <-chan RequestVoteResponse {
 	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true}
 
 	// Request votes from all peers in parallel
-	args := RequestVoteArgs{node.getCurrentTerm(), node.serverId, node.lastLogIndex(), node.lastLogTerm()}
+	idx, term := node.lastLogIndexAndTerm()
+	args := RequestVoteArgs{node.getCurrentTerm(), node.serverId, idx, term}
 	for _, peer := range node.peers {
 		go func(p *Peer) {
 			log.Debugf("node-%d requesting vote from node-%d", node.serverId, p.id)
@@ -288,11 +301,12 @@ func (node *Node) runLeader() {
 	)
 	defer heartbeatTicker.Stop()
 	for {
+		idx, term := node.lastLogIndexAndTerm()
 		args := AppendEntriesArgs{
 			node.getCurrentTerm(),
 			node.serverId,
-			node.lastLogIndex(),
-			node.lastLogTerm(),
+			idx,
+			term,
 			make([]LogEntry, 0),
 			node.getCommitIndex(),
 		}
@@ -315,15 +329,15 @@ func (node *Node) runLeader() {
 func (node *Node) convertToFollower(term int) {
 	log.Infof("node-%d converting to follower", node.serverId)
 	node.setCurrentTerm(term)
-	node.setState(Follower)
+	node.setStatus(Follower)
 }
 
 func (node *Node) convertToCandidate() {
 	log.Infof("node-%d converting to candidate", node.serverId)
-	node.setState(Candidate)
+	node.setStatus(Candidate)
 }
 
 func (node *Node) convertToLeader() {
 	log.Infof("node-%d converting to leader", node.serverId)
-	node.setState(Leader)
+	node.setStatus(Leader)
 }

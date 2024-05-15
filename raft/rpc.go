@@ -149,7 +149,8 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > 0 && args.LeaderCommit > node.getCommitIndex() {
-		commitIdx := min(args.LeaderCommit, node.lastLogIndex())
+		lastLogIndex, _ := node.lastLogIndexAndTerm()
+		commitIdx := min(args.LeaderCommit, lastLogIndex)
 		node.setCommitIndex(commitIdx)
 
 		// TODO: apply logs
