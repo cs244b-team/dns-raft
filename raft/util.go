@@ -21,7 +21,6 @@ func NewRandomTimer(minVal int, maxVal int) *RaftTimer {
 type Address struct {
 	ip   string
 	port uint16
-	// TODO: do we need more information here?
 }
 
 func NewAddress(ip string, port uint16) Address {

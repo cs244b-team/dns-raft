@@ -71,7 +71,6 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 		node.setVotedFor(args.CandidateId)
 		response.VoteGranted = true
 
-		// TODO: synch
 		node.setLastContact(time.Now())
 	}
 
