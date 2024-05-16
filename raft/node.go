@@ -257,7 +257,9 @@ func (node *Node) runCandidate() {
 	}
 
 	// Call RequestVote on peers
-	voteChannel := node.startElection()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	voteChannel := node.startElection(ctx)
 	node.mu.Unlock()
 
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
@@ -295,7 +297,6 @@ func (node *Node) runCandidate() {
 				votesReceived++
 			}
 
-			// TODO: what if the election timer stops while we are tallying the last vote?
 			if votesReceived >= (len(node.cluster)+1)/2 {
 				log.Infof(
 					"node-%d received majority of votes (%d/%d), converting to leader",
@@ -322,7 +323,7 @@ func (node *Node) runCandidate() {
 
 // Start an election and return a channel to receive vote responses
 // must be called with the lock held
-func (node *Node) startElection() <-chan RequestVoteResponse {
+func (node *Node) startElection(ctx context.Context) <-chan RequestVoteResponse {
 	log.Debugf("node-%d is starting election", node.serverId)
 
 	// Create a vote response channel
@@ -338,16 +339,8 @@ func (node *Node) startElection() <-chan RequestVoteResponse {
 	// Request votes from all peers in parallel
 	idx, term := node.lastLogIndexAndTerm()
 	args := RequestVoteArgs{node.getCurrentTerm(), node.serverId, idx, term}
-	for _, peer := range node.peers {
-		go func(p *Peer) {
-			log.Debugf("node-%d requesting vote from node-%d", node.serverId, p.id)
-			reply, err := p.RequestVote(args)
-			if err != nil {
-				log.Errorf("node-%d experienced RequestVote error: %s", node.serverId, err)
-			}
-			voteChannel <- reply
-		}(peer)
-	}
+
+	node.callPeers[RequestVoteResponse]("Node.RequestVote", args, node.config.RPCRetryInterval, ctx, voteChannel)
 
 	return voteChannel
 }

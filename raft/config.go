@@ -14,6 +14,7 @@ func DefaultConfig() Config {
 		ElectionTimeoutMin: 150,
 		ElectionTimeoutMax: 300,
 		HeartbeatInterval:  75,
+		RPCRetryInterval:   75,
 	}
 }
 

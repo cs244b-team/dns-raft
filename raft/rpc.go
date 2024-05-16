@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -170,4 +171,38 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	*reply = response
 
 	return nil
+}
+
+func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx context.Context, reply *ResponseType) bool {
+	if p == nil && p.Connect() != nil {
+		return false
+	}
+	call := c.Go(rpc, args, reply, make(chan *rpc.Call, 1))
+	select {
+		case <-time.After(timeout):
+			p.Disconnect()
+			if (!ctx.Err()) {
+				// If the context has not been cancelled yet, we can rety the RPC
+				return callRPC[ResponseType](p, rpc, args, reply)
+			}
+			return false
+		case resp := <-call.Done:
+			if resp != nil && resp.Error != nil {
+				return false
+			}
+			return true
+	}
+}
+
+func (node *Node) callPeers[ResponseType any](rpc string, args any, timeout int, ctx context.Context, channel chan<-ResponseType) {
+	for _, peer := range node.peers {
+		go func() {
+			var reply ResponseType
+			success := callRPC[ResponseType](peer, rpc, args, timeout, ctx, &reply)
+			if success && !ctx.Err() {
+				// Only write to the channel if the context has not been cancelled
+				channel <- reply
+			}
+		}()
+	}
 }
