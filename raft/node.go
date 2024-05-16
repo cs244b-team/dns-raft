@@ -386,10 +386,23 @@ func (node *Node) sendAppendEntries() {
 	log.Debugf("node-%d sending heartbeats", node.serverId)
 	for _, peer := range node.peers {
 		go func(p *Peer) {
-			_, err := p.AppendEntries(args)
+			reply, err := p.AppendEntries(args)
 			if err != nil {
 				log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
 			}
+
+			node.mu.Lock()
+			defer node.mu.Unlock()
+			if reply.CurrentTerm > node.getCurrentTerm() {
+				log.Debugf(
+					"node-%d received AppendEntries response with higher term %d, converting to follower",
+					node.serverId,
+					reply.CurrentTerm,
+				)
+				node.convertToFollower(reply.CurrentTerm)
+				return
+			}
+
 			// TODO: handle AppendEntries response
 		}(peer)
 	}
