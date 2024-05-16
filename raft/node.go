@@ -1,9 +1,7 @@
 package raft
 
 import (
-	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -20,15 +18,17 @@ const (
 
 type Node struct {
 	// Persistent state on all servers
-	storage *StableStorage
-	log     []*LogEntry
+	// storage *StableStorage
+	currentTerm int
+	votedFor    Optional[int]
+	log         []*LogEntry
 	// log     *StableLog
 
-	lastLogLock sync.Mutex
+	mu sync.Mutex // Lock to protect this node's states
 
 	// Volatile state on all servers
-	commitIndex atomic.Int32 // Index of highest log entry known to be committed (initialized to 0)
-	lastApplied atomic.Int32 // Index of highest log entry applied to state machine (initialized to 0)
+	commitIndex int // Index of highest log entry known to be committed (initialized to 0)
+	lastApplied int // Index of highest log entry applied to state machine (initialized to 0)
 	status      NodeStatus
 
 	// Volatile state on leaders
@@ -36,14 +36,13 @@ type Node struct {
 	matchIndex map[int]int // For each server, index of highest log entry known to be replicated on server
 
 	// Server and cluster state
-	serverId int          // the id of this server
-	leaderId atomic.Int32 // the id of the leader, or -1 if unknown
-	cluster  []Address    // List of all node addresses in the cluster
-	peers    []*Peer      // Peer information and RPC clients
+	serverId int       // the id of this server
+	leaderId int       // the id of the leader, or -1 if unknown
+	cluster  []Address // List of all node addresses in the cluster
+	peers    []*Peer   // Peer information and RPC clients
 
 	// For followers to know that they are receiving RPCs from other nodes
-	lastContact     time.Time
-	lastContactLock sync.Mutex
+	lastContact time.Time
 
 	// Configuration for timeouts and heartbeats
 	config Config
@@ -52,21 +51,24 @@ type Node struct {
 func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r := new(Node)
 
-	stateFile := fmt.Sprintf("/tmp/raft-node-%d.state", serverId)
-	r.storage = NewStableStorage(stateFile)
-	r.storage.Reset()
+	// stateFile := fmt.Sprintf("/tmp/raft-node-%d.state", serverId)
+	// r.storage = NewStableStorage(stateFile)
+	// r.storage.Reset()
+
+	r.currentTerm = 0
+	r.votedFor = None[int]()
 
 	r.log = make([]*LogEntry, 0)
 
-	r.commitIndex.Store(0)
-	r.lastApplied.Store(0)
+	r.commitIndex = 0
+	r.lastApplied = 0
 	r.status = Follower
 
 	r.nextIndex = make(map[int]int)
 	r.matchIndex = make(map[int]int)
 
 	r.serverId = int(serverId)
-	r.leaderId.Store(-1)
+	r.leaderId = -1
 	r.cluster = cluster
 	r.peers = make([]*Peer, 0)
 
@@ -98,79 +100,90 @@ func (node *Node) ConnectToCluster() {
 	}
 }
 
-// Helper functions for getting states, in case we want to implement persistence / atomic operations
+// // Helper functions for getting states, in case we want to implement persistence / atomic operations
+// func (node *Node) getCurrentTerm() int {
+// 	currentTerm, err := node.storage.GetCurrentTerm()
+// 	if err != nil {
+// 		log.Errorf("node-%d failed to get currentTerm: %s", node.serverId, err)
+// 	}
+// 	return currentTerm
+// }
+
+// func (node *Node) setCurrentTerm(currentTerm int) {
+// 	err := node.storage.SetCurrentTerm(currentTerm)
+// 	if err != nil {
+// 		log.Errorf("node-%d failed to set currentTerm: %s", node.serverId, err)
+// 	}
+// }
+
+// func (node *Node) getVotedFor() Optional[int] {
+// 	votedFor, err := node.storage.GetVotedFor()
+// 	if err != nil {
+// 		log.Errorf("node-%d failed to get votedFor: %s", node.serverId, err)
+// 	}
+// 	return votedFor
+// }
+
+// func (node *Node) setVotedFor(votedFor int) {
+// 	err := node.storage.SetVotedFor(votedFor)
+// 	if err != nil {
+// 		log.Errorf("node-%d failed to set votedFor: %s", node.serverId, err)
+// 	}
+// }
+
 func (node *Node) getCurrentTerm() int {
-	currentTerm, err := node.storage.GetCurrentTerm()
-	if err != nil {
-		log.Errorf("node-%d failed to get currentTerm: %s", node.serverId, err)
-	}
-	return currentTerm
+	return node.currentTerm
 }
 
 func (node *Node) setCurrentTerm(currentTerm int) {
-	err := node.storage.SetCurrentTerm(currentTerm)
-	if err != nil {
-		log.Errorf("node-%d failed to set currentTerm: %s", node.serverId, err)
-	}
+	node.currentTerm = currentTerm
 }
 
 func (node *Node) getVotedFor() Optional[int] {
-	votedFor, err := node.storage.GetVotedFor()
-	if err != nil {
-		log.Errorf("node-%d failed to get votedFor: %s", node.serverId, err)
-	}
-	return votedFor
+	return node.votedFor
 }
 
 func (node *Node) setVotedFor(votedFor int) {
-	err := node.storage.SetVotedFor(votedFor)
-	if err != nil {
-		log.Errorf("node-%d failed to set votedFor: %s", node.serverId, err)
-	}
+	node.votedFor.Set(votedFor)
 }
 
 func (node *Node) getStatus() NodeStatus {
-	return NodeStatus(atomic.LoadUint32((*uint32)(&node.status)))
+	return node.status
 }
 
 func (node *Node) setStatus(status NodeStatus) {
-	statusAddr := (*uint32)(&node.status)
-	atomic.StoreUint32(statusAddr, uint32(status))
+	node.status = status
 }
 
 func (node *Node) getLeaderId() int {
-	return int(node.leaderId.Load())
+	return node.leaderId
 }
 
 func (node *Node) setLeaderId(leaderId int) {
-	node.leaderId.Store(int32(leaderId))
+	node.leaderId = leaderId
 }
 
 func (node *Node) getCommitIndex() int {
-	return int(node.commitIndex.Load())
+	return node.commitIndex
 }
 
 func (node *Node) setCommitIndex(commitIndex int) {
-	node.commitIndex.Store(int32(commitIndex))
+	node.commitIndex = commitIndex
 }
 
 func (node *Node) getLastApplied() int {
-	return int(node.lastApplied.Load())
+	return node.lastApplied
 }
 
 func (node *Node) setLastApplied(lastApplied int) {
-	node.lastApplied.Store(int32(lastApplied))
+	node.lastApplied = lastApplied
 }
 
 func (node *Node) getLastContact() time.Time {
-	node.lastContactLock.Lock()
-	defer node.lastContactLock.Unlock()
 	return node.lastContact
 }
 
 func (node *Node) setLastContact(lastContact time.Time) {
-	node.lastContactLock.Lock()
-	defer node.lastContactLock.Unlock()
 	node.lastContact = lastContact
 }
 
@@ -182,9 +195,6 @@ func (node *Node) isCandidateUpToDate(lastLogTerm int, lastLogIndex int) bool {
 
 // Retrieve the index and the term of the last log entry (-1 if no entries)
 func (node *Node) lastLogIndexAndTerm() (int, int) {
-	node.lastLogLock.Lock()
-	defer node.lastLogLock.Unlock()
-
 	lastIndex := len(node.log) - 1
 	if lastIndex < 0 {
 		return -1, -1
@@ -196,7 +206,11 @@ func (node *Node) lastLogIndexAndTerm() (int, int) {
 // Main event loop for this RaftNode
 func (node *Node) Run() {
 	for {
-		switch node.getStatus() {
+		node.mu.Lock()
+		status := node.getStatus()
+		node.mu.Unlock()
+
+		switch status {
 		case Follower:
 			node.runFollower()
 		case Candidate:
@@ -209,10 +223,24 @@ func (node *Node) Run() {
 
 func (node *Node) runFollower() {
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
-	for node.getStatus() == Follower {
+	for {
+		node.mu.Lock()
+		if node.getStatus() != Follower {
+			node.mu.Unlock()
+			return
+		}
+		node.mu.Unlock()
+
 		<-electionTimer.C
 		if time.Since(node.getLastContact()) > electionTimer.timeout {
+			node.mu.Lock()
+			if node.getStatus() != Follower {
+				node.mu.Unlock()
+				return
+			}
+
 			node.convertToCandidate()
+			node.mu.Unlock()
 			return
 		}
 		electionTimer = NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
@@ -220,14 +248,37 @@ func (node *Node) runFollower() {
 }
 
 func (node *Node) runCandidate() {
+	// Check if the node is in the candidate state before starting the election
+	node.mu.Lock()
+	status := node.getStatus()
+	if status != Candidate {
+		node.mu.Unlock()
+		return
+	}
+
 	// Call RequestVote on peers
 	voteChannel := node.startElection()
+	node.mu.Unlock()
+
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 
 	votesReceived := 0
-	for node.getStatus() == Candidate {
+	for {
+		node.mu.Lock()
+		if node.getStatus() != Candidate {
+			node.mu.Unlock()
+			return
+		}
+		node.mu.Unlock()
+
 		select {
 		case vote := <-voteChannel:
+			node.mu.Lock()
+			if node.getStatus() != Candidate {
+				node.mu.Unlock()
+				return
+			}
+
 			// If RPC response contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 			if vote.CurrentTerm > node.getCurrentTerm() {
 				log.Debugf(
@@ -236,6 +287,7 @@ func (node *Node) runCandidate() {
 					vote.CurrentTerm,
 				)
 				node.convertToFollower(vote.CurrentTerm)
+				node.mu.Unlock()
 				return
 			}
 
@@ -252,8 +304,11 @@ func (node *Node) runCandidate() {
 					len(node.cluster),
 				)
 				node.convertToLeader()
+				node.mu.Unlock()
 				return
 			}
+			node.mu.Unlock()
+
 		case <-electionTimer.C:
 			log.Debugf(
 				"node-%d election timer expired after %d ms",
@@ -265,6 +320,8 @@ func (node *Node) runCandidate() {
 	}
 }
 
+// Start an election and return a channel to receive vote responses
+// must be called with the lock held
 func (node *Node) startElection() <-chan RequestVoteResponse {
 	log.Debugf("node-%d is starting election", node.serverId)
 
@@ -301,28 +358,41 @@ func (node *Node) runLeader() {
 	)
 	defer heartbeatTicker.Stop()
 	for {
-		idx, term := node.lastLogIndexAndTerm()
-		args := AppendEntriesArgs{
-			node.getCurrentTerm(),
-			node.serverId,
-			idx,
-			term,
-			make([]LogEntry, 0),
-			node.getCommitIndex(),
-		}
-
-		log.Debugf("node-%d sending heartbeats", node.serverId)
-		for _, peer := range node.peers {
-			go func(p *Peer) {
-				_, err := p.AppendEntries(args)
-				if err != nil {
-					log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
-				}
-			}(peer)
-		}
+		node.mu.Lock()
+		node.sendAppendEntries()
+		node.mu.Unlock()
 		<-heartbeatTicker.C
 	}
 	// TODO
+}
+
+// send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
+// must be called with the lock held
+func (node *Node) sendAppendEntries() {
+	if node.getStatus() != Leader {
+		return
+	}
+
+	idx, term := node.lastLogIndexAndTerm()
+	args := AppendEntriesArgs{
+		node.getCurrentTerm(),
+		node.serverId,
+		idx,
+		term,
+		make([]LogEntry, 0),
+		node.getCommitIndex(),
+	}
+
+	log.Debugf("node-%d sending heartbeats", node.serverId)
+	for _, peer := range node.peers {
+		go func(p *Peer) {
+			_, err := p.AppendEntries(args)
+			if err != nil {
+				log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
+			}
+			// TODO: handle AppendEntries response
+		}(peer)
+	}
 }
 
 // State conversion functions

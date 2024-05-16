@@ -49,6 +49,9 @@ type RequestVoteResponse struct {
 func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) error {
 	log.Debugf("node-%d received vote request from node-%d", node.serverId, args.CandidateId)
 
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
 	response := RequestVoteResponse{CurrentTerm: node.getCurrentTerm(), VoteGranted: false}
 
 	// Reply false if term < currentTerm (Section 5.1)
@@ -107,6 +110,9 @@ type AppendEntriesResponse struct {
 // Invoked by leader to replicate log entries (Section 5.3); also used as a heartbeat
 func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResponse) error {
 	log.Debugf("node-%d received append entries request from node-%d", node.serverId, args.LeaderId)
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
 
 	// TODO: Section 5.2, indicate that during this timeout period, we granted a vote
 	// If election timeout elapses without receiving AppendEntries
