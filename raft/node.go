@@ -22,7 +22,7 @@ type Node struct {
 	// storage *StableStorage
 	currentTerm int
 	votedFor    Optional[int]
-	log         []*LogEntry
+	log         []LogEntry
 	// log     *StableLog
 
 	mu sync.Mutex // Lock to protect this node's states
@@ -59,7 +59,7 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r.currentTerm = 0
 	r.votedFor = None[int]()
 
-	r.log = make([]*LogEntry, 0)
+	r.log = make([]LogEntry, 0)
 
 	r.commitIndex = 0
 	r.lastApplied = 0
@@ -388,40 +388,44 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 	log.Debugf("node-%d sending heartbeats", node.serverId)
 	for _, peer := range node.peers {
 		go func(p *Peer) {
-			for {
-				idx, term := node.prevLogIndexAndTerm(p.id)
-				args := AppendEntriesArgs{
-					node.getCurrentTerm(),
+			node.mu.Lock()
+			idx, term := node.prevLogIndexAndTerm(p.id)
+			entries := make([]LogEntry, 0)
+			if idx > -1 && idx < len(node.log)-1 {
+				entries = node.log[idx+1 : idx+2]
+			}
+			args := AppendEntriesArgs{
+				node.getCurrentTerm(),
+				node.serverId,
+				idx,
+				term,
+				entries,
+				node.getCommitIndex(),
+			}
+			node.mu.Unlock()
+			reply, err := callRPCNoRetry[AppendEntriesResponse](p, "Node.AppendEntries", args, ctx)
+			if err != nil {
+				log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
+				return
+			}
+			unpackedReply := reply.Value()
+			node.mu.Lock()
+			defer node.mu.Unlock()
+			if unpackedReply.CurrentTerm > node.getCurrentTerm() {
+				log.Debugf(
+					"node-%d received AppendEntries response with higher term %d, converting to follower",
 					node.serverId,
-					idx,
-					term,
-					make([]LogEntry, 0),
-					node.getCommitIndex(),
-				}
-				channel := make(chan AppendEntriesResponse)
-				reply, err := callRPC(p, "Node.AppendEntries", args, node.config.RPCRetryInterval, ctx, channel)
-				if err != nil {
-					log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
-					return
-				}
-				unpackedReply := reply.Value()
-				node.mu.Lock()
-				defer node.mu.Unlock()
-				if unpackedReply.CurrentTerm > node.getCurrentTerm() {
-					log.Debugf(
-						"node-%d received AppendEntries response with higher term %d, converting to follower",
-						node.serverId,
-						unpackedReply.CurrentTerm,
-					)
-					node.convertToFollower(unpackedReply.CurrentTerm)
-					return
-				}
-				// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
-				// does not seem to be the right spot to do so.
-				if !unpackedReply.Success {
-					node.nextIndex[p.id] -= 1
-				}
-				break
+					unpackedReply.CurrentTerm,
+				)
+				node.convertToFollower(unpackedReply.CurrentTerm)
+				return
+			}
+			// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
+			// does not seem to be the right spot to do so.
+			if !unpackedReply.Success {
+				node.nextIndex[p.id] -= 1
+			} else {
+				// TODO: check if something can be committed
 			}
 			// TODO: handle AppendEntries response
 		}(peer)
