@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -203,6 +204,15 @@ func (node *Node) lastLogIndexAndTerm() (int, int) {
 	return lastIndex, node.log[lastIndex].Term
 }
 
+func (node *Node) prevLogIndexAndTerm(peerId int) (int, int) {
+	nextIndex := node.nextIndex[peerId]
+	if nextIndex == 0 {
+		return -1, -1
+	}
+
+	return nextIndex - 1, node.log[nextIndex-1].Term
+}
+
 // Main event loop for this RaftNode
 func (node *Node) Run() {
 	for {
@@ -334,13 +344,14 @@ func (node *Node) startElection(ctx context.Context) <-chan RequestVoteResponse 
 
 	// Vote for self
 	node.setVotedFor(node.serverId)
+	// TODO: deduplicate votes
 	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true}
 
 	// Request votes from all peers in parallel
 	idx, term := node.lastLogIndexAndTerm()
 	args := RequestVoteArgs{node.getCurrentTerm(), node.serverId, idx, term}
 
-	node.callPeers[RequestVoteResponse]("Node.RequestVote", args, node.config.RPCRetryInterval, ctx, voteChannel)
+	callPeers(node, "Node.RequestVote", args, node.config.RPCRetryInterval, ctx, voteChannel)
 
 	return voteChannel
 }
@@ -349,10 +360,18 @@ func (node *Node) runLeader() {
 	heartbeatTicker := time.NewTicker(
 		time.Duration(node.config.HeartbeatInterval) * time.Millisecond,
 	)
+	// Initialize nextIndex
+	node.mu.Lock()
+	for peerId := range node.nextIndex {
+		node.nextIndex[peerId] = len(node.log)
+	}
+	node.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
+	defer cancel()
 	for {
 		node.mu.Lock()
-		node.sendAppendEntries()
+		node.sendAppendEntries(ctx)
 		node.mu.Unlock()
 		<-heartbeatTicker.C
 	}
@@ -361,41 +380,46 @@ func (node *Node) runLeader() {
 
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
-func (node *Node) sendAppendEntries() {
+func (node *Node) sendAppendEntries(ctx context.Context) {
 	if node.getStatus() != Leader {
 		return
-	}
-
-	idx, term := node.lastLogIndexAndTerm()
-	args := AppendEntriesArgs{
-		node.getCurrentTerm(),
-		node.serverId,
-		idx,
-		term,
-		make([]LogEntry, 0),
-		node.getCommitIndex(),
 	}
 
 	log.Debugf("node-%d sending heartbeats", node.serverId)
 	for _, peer := range node.peers {
 		go func(p *Peer) {
-			reply, err := p.AppendEntries(args)
-			if err != nil {
-				log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
-			}
-
-			node.mu.Lock()
-			defer node.mu.Unlock()
-			if reply.CurrentTerm > node.getCurrentTerm() {
-				log.Debugf(
-					"node-%d received AppendEntries response with higher term %d, converting to follower",
+			for {
+				idx, term := node.prevLogIndexAndTerm(p.id)
+				args := AppendEntriesArgs{
+					node.getCurrentTerm(),
 					node.serverId,
-					reply.CurrentTerm,
-				)
-				node.convertToFollower(reply.CurrentTerm)
-				return
+					idx,
+					term,
+					make([]LogEntry, 0),
+					node.getCommitIndex(),
+				}
+				channel := make(chan AppendEntriesResponse)
+				reply, err := callRPC(p, "Node.AppendEntries", args, node.config.RPCRetryInterval, ctx, channel)
+				if err != nil {
+					log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
+					return
+				}
+				unpackedReply := reply.Value()
+				node.mu.Lock()
+				defer node.mu.Unlock()
+				if unpackedReply.CurrentTerm > node.getCurrentTerm() {
+					log.Debugf(
+						"node-%d received AppendEntries response with higher term %d, converting to follower",
+						node.serverId,
+						unpackedReply.CurrentTerm,
+					)
+					node.convertToFollower(unpackedReply.CurrentTerm)
+					return
+				}
+				if !unpackedReply.Success {
+					node.nextIndex[p.id] -= 1
+				}
 			}
-
 			// TODO: handle AppendEntries response
 		}(peer)
 	}
