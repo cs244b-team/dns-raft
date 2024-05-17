@@ -393,6 +393,7 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes map[i
 			idx, term := node.prevLogIndexAndTerm(p.id)
 			entries := make([]LogEntry, 0)
 			if idx > -1 && idx < len(node.log)-1 {
+				// Credit to https://arorashu.github.io/posts/raft.html for giving an idea on how to separate heartbeats from updating followers
 				entries = node.log[idx+1 : idx+2]
 			}
 			args := AppendEntriesArgs{
