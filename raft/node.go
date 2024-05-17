@@ -433,7 +433,7 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes map[i
 					// TODO: commit idx+1!
 				}
 				node.nextIndex[p.id] += 1
-				// TODO: de-duplicate votes
+				// TODO: de-duplicate votes -- perhaps make a set of node ids that voted?
 			}
 			// TODO: handle AppendEntries response
 		}(peer)
