@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -21,7 +22,7 @@ type Node struct {
 	// storage *StableStorage
 	currentTerm int
 	votedFor    Optional[int]
-	log         []*LogEntry
+	log         []LogEntry
 	// log     *StableLog
 
 	mu sync.Mutex // Lock to protect this node's states
@@ -58,7 +59,7 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r.currentTerm = 0
 	r.votedFor = None[int]()
 
-	r.log = make([]*LogEntry, 0)
+	r.log = make([]LogEntry, 0)
 
 	r.commitIndex = 0
 	r.lastApplied = 0
@@ -203,6 +204,15 @@ func (node *Node) lastLogIndexAndTerm() (int, int) {
 	return lastIndex, node.log[lastIndex].Term
 }
 
+func (node *Node) prevLogIndexAndTerm(peerId int) (int, int) {
+	nextIndex := node.nextIndex[peerId]
+	if nextIndex == 0 {
+		return -1, -1
+	}
+
+	return nextIndex - 1, node.log[nextIndex-1].Term
+}
+
 // Main event loop for this RaftNode
 func (node *Node) Run() {
 	for {
@@ -257,7 +267,9 @@ func (node *Node) runCandidate() {
 	}
 
 	// Call RequestVote on peers
-	voteChannel := node.startElection()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	voteChannel := node.startElection(ctx)
 	node.mu.Unlock()
 
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
@@ -295,7 +307,6 @@ func (node *Node) runCandidate() {
 				votesReceived++
 			}
 
-			// TODO: what if the election timer stops while we are tallying the last vote?
 			if votesReceived >= (len(node.cluster)+1)/2 {
 				log.Infof(
 					"node-%d received majority of votes (%d/%d), converting to leader",
@@ -322,7 +333,7 @@ func (node *Node) runCandidate() {
 
 // Start an election and return a channel to receive vote responses
 // must be called with the lock held
-func (node *Node) startElection() <-chan RequestVoteResponse {
+func (node *Node) startElection(ctx context.Context) <-chan RequestVoteResponse {
 	log.Debugf("node-%d is starting election", node.serverId)
 
 	// Create a vote response channel
@@ -333,21 +344,14 @@ func (node *Node) startElection() <-chan RequestVoteResponse {
 
 	// Vote for self
 	node.setVotedFor(node.serverId)
+	// TODO: deduplicate votes
 	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true}
 
 	// Request votes from all peers in parallel
 	idx, term := node.lastLogIndexAndTerm()
 	args := RequestVoteArgs{node.getCurrentTerm(), node.serverId, idx, term}
-	for _, peer := range node.peers {
-		go func(p *Peer) {
-			log.Debugf("node-%d requesting vote from node-%d", node.serverId, p.id)
-			reply, err := p.RequestVote(args)
-			if err != nil {
-				log.Errorf("node-%d experienced RequestVote error: %s", node.serverId, err)
-			}
-			voteChannel <- reply
-		}(peer)
-	}
+
+	callPeers(node, "Node.RequestVote", args, node.config.RPCRetryInterval, ctx, voteChannel)
 
 	return voteChannel
 }
@@ -356,10 +360,18 @@ func (node *Node) runLeader() {
 	heartbeatTicker := time.NewTicker(
 		time.Duration(node.config.HeartbeatInterval) * time.Millisecond,
 	)
+	// Initialize nextIndex
+	node.mu.Lock()
+	for peerId := range node.nextIndex {
+		node.nextIndex[peerId] = len(node.log)
+	}
+	node.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
+	defer cancel()
 	for {
 		node.mu.Lock()
-		node.sendAppendEntries()
+		node.sendAppendEntries(ctx)
 		node.mu.Unlock()
 		<-heartbeatTicker.C
 	}
@@ -368,41 +380,53 @@ func (node *Node) runLeader() {
 
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
-func (node *Node) sendAppendEntries() {
+func (node *Node) sendAppendEntries(ctx context.Context) {
 	if node.getStatus() != Leader {
 		return
-	}
-
-	idx, term := node.lastLogIndexAndTerm()
-	args := AppendEntriesArgs{
-		node.getCurrentTerm(),
-		node.serverId,
-		idx,
-		term,
-		make([]LogEntry, 0),
-		node.getCommitIndex(),
 	}
 
 	log.Debugf("node-%d sending heartbeats", node.serverId)
 	for _, peer := range node.peers {
 		go func(p *Peer) {
-			reply, err := p.AppendEntries(args)
+			node.mu.Lock()
+			idx, term := node.prevLogIndexAndTerm(p.id)
+			entries := make([]LogEntry, 0)
+			if idx > -1 && idx < len(node.log)-1 {
+				entries = node.log[idx+1 : idx+2]
+			}
+			args := AppendEntriesArgs{
+				node.getCurrentTerm(),
+				node.serverId,
+				idx,
+				term,
+				entries,
+				node.getCommitIndex(),
+			}
+			node.mu.Unlock()
+			reply, err := callRPCNoRetry[AppendEntriesResponse](p, "Node.AppendEntries", args, ctx)
 			if err != nil {
 				log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
+				return
 			}
-
+			unpackedReply := reply.Value()
 			node.mu.Lock()
 			defer node.mu.Unlock()
-			if reply.CurrentTerm > node.getCurrentTerm() {
+			if unpackedReply.CurrentTerm > node.getCurrentTerm() {
 				log.Debugf(
 					"node-%d received AppendEntries response with higher term %d, converting to follower",
 					node.serverId,
-					reply.CurrentTerm,
+					unpackedReply.CurrentTerm,
 				)
-				node.convertToFollower(reply.CurrentTerm)
+				node.convertToFollower(unpackedReply.CurrentTerm)
 				return
 			}
-
+			// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
+			// does not seem to be the right spot to do so.
+			if !unpackedReply.Success {
+				node.nextIndex[p.id] -= 1
+			} else {
+				// TODO: check if something can be committed
+			}
 			// TODO: handle AppendEntries response
 		}(peer)
 	}
