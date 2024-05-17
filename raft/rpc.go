@@ -147,13 +147,25 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	// Save leader id
 	node.setLeaderId(args.LeaderId)
 
-	// TODO: 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (Section 5.3)
+	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (Section 5.3)
+	if args.PrevLogIndex >= len(node.log) || node.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		*reply = response
+		return nil
+	}
 
-	// TODO 3. If an existing entry conflicts with a new one (same index but different terms),
+	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it (Section 5.3)
+	startInsertingAtIdx := args.PrevLogIndex + 1
+	for i, entry := range args.Entries {
+		if startInsertingAtIdx+i < len(node.log) && node.log[startInsertingAtIdx+i].Term != entry.Term {
+			node.log = node.log[:startInsertingAtIdx+i]
+			args.Entries = args.Entries[i:] // the prior entries are already in the log
+			break
+		}
+	}
 
-	// TODO 4. Append any new entries not already in the log
-	// if len(args.Entries) > 0 {}
+	// 4. Append any new entries not already in the log
+	node.log = append(node.log, args.Entries...)
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > 0 && args.LeaderCommit > node.getCommitIndex() {
