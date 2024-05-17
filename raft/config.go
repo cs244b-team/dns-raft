@@ -7,6 +7,9 @@ type Config struct {
 
 	// How often a Leader should send empty Append Entry heartbeats
 	HeartbeatInterval int
+
+	// How often RPCs should be retried
+	RPCRetryInterval int
 }
 
 func DefaultConfig() Config {

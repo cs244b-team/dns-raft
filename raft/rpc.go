@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -173,36 +174,36 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	return nil
 }
 
-func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx context.Context, reply *ResponseType) bool {
+// Call RPC on peer p. It will retry every TIMEOUT ms and return the reply (or an error) until CTX errors. Blocking.
+func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx context.Context, channel chan<- ResponseType) (Optional[ResponseType], error) {
+	// Do not continue calling RPC if p cannot be connected to
 	if p == nil && p.Connect() != nil {
-		return false
+		return None[ResponseType](), errors.New("Could not connect")
 	}
-	call := c.Go(rpc, args, reply, make(chan *rpc.Call, 1))
+	var reply ResponseType
+	call := p.client.Go(rpc, args, &reply, nil)
 	select {
-		case <-time.After(timeout):
-			p.Disconnect()
-			if (!ctx.Err()) {
-				// If the context has not been cancelled yet, we can rety the RPC
-				return callRPC[ResponseType](p, rpc, args, reply)
-			}
-			return false
-		case resp := <-call.Done:
-			if resp != nil && resp.Error != nil {
-				return false
-			}
-			return true
+	case <-time.After(time.Duration(timeout)):
+		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
+		return callRPC(p, rpc, args, timeout, ctx, channel)
+	case resp := <-call.Done:
+		if resp != nil && resp.Error != nil {
+			return None[ResponseType](), resp.Error
+		}
+		return Some[ResponseType](reply), nil
+	case <-ctx.Done():
+		return None[ResponseType](), errors.New("RPC cancelled")
 	}
 }
 
-func (node *Node) callPeers[ResponseType any](rpc string, args any, timeout int, ctx context.Context, channel chan<-ResponseType) {
+// Calls RPC on all peers in parallel. It will ignore all errors and send any replies through CHANNEL. Nonblocking.
+func callPeers[ResponseType any](node *Node, rpc string, args any, timeout int, ctx context.Context, channel chan<- ResponseType) {
 	for _, peer := range node.peers {
-		go func() {
-			var reply ResponseType
-			success := callRPC[ResponseType](peer, rpc, args, timeout, ctx, &reply)
-			if success && !ctx.Err() {
-				// Only write to the channel if the context has not been cancelled
-				channel <- reply
+		go func(peer *Peer) {
+			reply, err := callRPC(peer, rpc, args, timeout, ctx, channel)
+			if err == nil && reply.HasValue() {
+				channel <- reply.Value()
 			}
-		}()
+		}(peer)
 	}
 }
