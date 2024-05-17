@@ -369,9 +369,10 @@ func (node *Node) runLeader() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
 	defer cancel()
+	var logIndicesToVotes map[int]int
 	for {
 		node.mu.Lock()
-		node.sendAppendEntries(ctx)
+		node.sendAppendEntries(ctx, logIndicesToVotes)
 		node.mu.Unlock()
 		<-heartbeatTicker.C
 	}
@@ -380,7 +381,7 @@ func (node *Node) runLeader() {
 
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
-func (node *Node) sendAppendEntries(ctx context.Context) {
+func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes map[int]int) {
 	if node.getStatus() != Leader {
 		return
 	}
@@ -424,8 +425,14 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 			// does not seem to be the right spot to do so.
 			if !unpackedReply.Success {
 				node.nextIndex[p.id] -= 1
-			} else {
-				// TODO: check if something can be committed
+			} else if idx < len(node.log)-1 {
+				// We can consider the nextIndex to have been accepted by the peer
+				logIndicesToVotes[idx+1]++
+				if logIndicesToVotes[idx+1] >= (len(node.cluster)+1)/2 && node.log[idx+1].Term == node.getCurrentTerm() {
+					// TODO: commit idx+1!
+				}
+				node.nextIndex[p.id] += 1
+				// TODO: de-duplicate votes
 			}
 			// TODO: handle AppendEntries response
 		}(peer)
