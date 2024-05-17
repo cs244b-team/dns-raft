@@ -416,9 +416,12 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 					node.convertToFollower(unpackedReply.CurrentTerm)
 					return
 				}
+				// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
+				// does not seem to be the right spot to do so.
 				if !unpackedReply.Success {
 					node.nextIndex[p.id] -= 1
 				}
+				break
 			}
 			// TODO: handle AppendEntries response
 		}(peer)
