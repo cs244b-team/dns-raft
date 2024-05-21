@@ -45,6 +45,7 @@ type RequestVoteArgs struct {
 type RequestVoteResponse struct {
 	CurrentTerm int
 	VoteGranted bool
+	ServerId    int
 }
 
 // Invoked by candidates to gather votes, not called directly by this RaftNode (Section 5.2)
@@ -54,7 +55,7 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	response := RequestVoteResponse{CurrentTerm: node.getCurrentTerm(), VoteGranted: false}
+	response := RequestVoteResponse{CurrentTerm: node.getCurrentTerm(), VoteGranted: false, ServerId: node.serverId}
 
 	// Reply false if term < currentTerm (Section 5.1)
 	if args.CandidateTerm < node.getCurrentTerm() {
@@ -107,6 +108,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesResponse struct {
 	CurrentTerm int
 	Success     bool
+	ServerId    int
 }
 
 // Invoked by leader to replicate log entries (Section 5.3); also used as a heartbeat
@@ -123,7 +125,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 
 	// TODO (1) ...
 
-	response := AppendEntriesResponse{CurrentTerm: node.getCurrentTerm(), Success: false}
+	response := AppendEntriesResponse{CurrentTerm: node.getCurrentTerm(), Success: false, ServerId: node.serverId}
 
 	// 1. Reply false if term < currentTerm (Section 5.1)
 	if args.LeaderTerm < node.getCurrentTerm() {
@@ -148,7 +150,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	node.setLeaderId(args.LeaderId)
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (Section 5.3)
-	if args.PrevLogIndex >= len(node.log) || node.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if args.PrevLogIndex != -1 && args.PrevLogIndex >= len(node.log) || node.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		*reply = response
 		return nil
 	}

@@ -44,3 +44,19 @@ func AddressFromString(addr string) (Address, error) {
 func (addr *Address) String() string {
 	return net.JoinHostPort(addr.ip, strconv.Itoa(int(addr.port)))
 }
+
+type IndexVoteCounter map[int]map[int]bool // [idx]: { server1: true, ... }, ...
+
+func (counter IndexVoteCounter) AddVote(idx int, serverId int) {
+	if _, exists := counter[idx]; !exists {
+		counter[idx] = make(map[int]bool)
+	}
+	counter[idx][serverId] = true
+}
+
+func (counter IndexVoteCounter) CountVotes(idx int) int {
+	if _, exists := counter[idx]; !exists {
+		return 0
+	}
+	return len(counter[idx])
+}

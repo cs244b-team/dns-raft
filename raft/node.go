@@ -274,7 +274,7 @@ func (node *Node) runCandidate() {
 
 	electionTimer := NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 
-	votesReceived := 0
+	votesReceived := map[int]bool{}
 	for {
 		node.mu.Lock()
 		if node.getStatus() != Candidate {
@@ -304,14 +304,14 @@ func (node *Node) runCandidate() {
 			}
 
 			if vote.VoteGranted {
-				votesReceived++
+				votesReceived[vote.ServerId] = true
 			}
 
-			if votesReceived >= (len(node.cluster)+1)/2 {
+			if len(votesReceived) >= (len(node.cluster)+1)/2 {
 				log.Infof(
 					"node-%d received majority of votes (%d/%d), converting to leader",
 					node.serverId,
-					votesReceived,
+					len(votesReceived),
 					len(node.cluster),
 				)
 				node.convertToLeader()
@@ -344,8 +344,7 @@ func (node *Node) startElection(ctx context.Context) <-chan RequestVoteResponse 
 
 	// Vote for self
 	node.setVotedFor(node.serverId)
-	// TODO: deduplicate votes
-	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true}
+	voteChannel <- RequestVoteResponse{node.getCurrentTerm(), true, node.serverId}
 
 	// Request votes from all peers in parallel
 	idx, term := node.lastLogIndexAndTerm()
@@ -369,7 +368,7 @@ func (node *Node) runLeader() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
 	defer cancel()
-	var logIndicesToVotes map[int]int
+	logIndicesToVotes := make(IndexVoteCounter)
 	for {
 		node.mu.Lock()
 		node.sendAppendEntries(ctx, logIndicesToVotes)
@@ -381,7 +380,7 @@ func (node *Node) runLeader() {
 
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
-func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes map[int]int) {
+func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes IndexVoteCounter) {
 	if node.getStatus() != Leader {
 		return
 	}
@@ -428,12 +427,11 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes map[i
 				node.nextIndex[p.id] -= 1
 			} else if idx < len(node.log)-1 {
 				// We can consider the nextIndex to have been accepted by the peer
-				logIndicesToVotes[idx+1]++
-				if logIndicesToVotes[idx+1] >= (len(node.cluster)+1)/2 && node.log[idx+1].Term == node.getCurrentTerm() {
+				logIndicesToVotes.AddVote(idx+1, unpackedReply.ServerId)
+				if logIndicesToVotes.CountVotes(idx+1) >= (len(node.cluster)+1)/2 && node.log[idx+1].Term == node.getCurrentTerm() {
 					// TODO: commit idx+1!
 				}
 				node.nextIndex[p.id] += 1
-				// TODO: de-duplicate votes -- perhaps make a set of node ids that voted?
 			}
 			// TODO: handle AppendEntries response
 		}(peer)
