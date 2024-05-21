@@ -24,15 +24,3 @@ func (p *Peer) Connect() error {
 func (p *Peer) Disconnect() {
 	p.client.Close()
 }
-
-func (p *Peer) RequestVote(args RequestVoteArgs) (RequestVoteResponse, error) {
-	var reply RequestVoteResponse
-	err := p.client.Call("Node.RequestVote", args, &reply)
-	return reply, err
-}
-
-func (p *Peer) AppendEntries(args AppendEntriesArgs) (AppendEntriesResponse, error) {
-	var reply AppendEntriesResponse
-	err := p.client.Call("Node.AppendEntries", args, &reply)
-	return reply, err
-}
