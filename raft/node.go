@@ -448,9 +448,12 @@ func applyCommand(entry LogEntry) {
 
 func (node *Node) applyLogs() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
+		node.mu.TryLock()
 		applyCommand(node.log[idx])
 		// write to disk
+		node.mu.Unlock()
 	}
+	node.mu.TryLock()
 	node.lastApplied = node.commitIndex
 }
 
