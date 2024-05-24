@@ -47,6 +47,8 @@ type Node struct {
 
 	// Configuration for timeouts and heartbeats
 	config Config
+
+	kv_store map[string]any
 }
 
 func NewNode(serverId int, cluster []Address, config Config) *Node {
@@ -430,7 +432,9 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 				// We can consider the nextIndex to have been accepted by the peer
 				logIndicesToVotes.AddVote(nextIdx, unpackedReply.ServerId)
 				if logIndicesToVotes.CountVotes(nextIdx) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() {
-					// TODO: commit idx+1!
+					commitIdx := min(node.commitIndex, nextIdx)
+					node.setCommitIndex(commitIdx)
+					node.applyLogs()
 				}
 				node.nextIndex[p.id] += 1
 			}
@@ -438,8 +442,16 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 	}
 }
 
-func (node *Node) applyLogs() {
+func applyCommand(entry LogEntry) {
+	// apply string to update kv_store
+}
 
+func (node *Node) applyLogs() {
+	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
+		applyCommand(node.log[idx])
+		// write to disk
+	}
+	node.lastApplied = node.commitIndex
 }
 
 // State conversion functions
