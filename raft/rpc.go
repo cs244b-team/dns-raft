@@ -140,6 +140,8 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 		return nil
 	}
 
+	// TODO: reset election timeout on node if you receive valid appendentries RPC!
+
 	// Section 5.2, convert to follower if term > currentTerm
 	if args.LeaderTerm > node.getCurrentTerm() {
 		node.convertToFollower(args.LeaderTerm)
@@ -174,9 +176,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 		lastLogIndex, _ := node.lastLogIndexAndTerm()
 		commitIdx := min(args.LeaderCommit, lastLogIndex)
 		node.setCommitIndex(commitIdx)
-
-		// TODO: apply logs
-
+		node.applyLogs()
 	}
 
 	// TODO: synch

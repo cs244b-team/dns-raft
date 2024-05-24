@@ -61,8 +61,8 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 
 	r.log = make([]LogEntry, 0)
 
-	r.commitIndex = 0
-	r.lastApplied = 0
+	r.commitIndex = -1
+	r.lastApplied = -1
 	r.status = Follower
 
 	r.nextIndex = make(map[int]int)
@@ -390,10 +390,11 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 		go func(p *Peer) {
 			node.mu.Lock()
 			idx, term := node.prevLogIndexAndTerm(p.id)
+			nextIdx := idx + 1
 			entries := make([]LogEntry, 0)
-			if idx > -1 && idx < len(node.log)-1 {
+			if nextIdx < len(node.log) {
 				// Credit to https://arorashu.github.io/posts/raft.html for giving an idea on how to separate heartbeats from updating followers
-				entries = node.log[idx+1 : idx+2]
+				entries = node.log[nextIdx : nextIdx+1]
 			}
 			args := AppendEntriesArgs{
 				node.getCurrentTerm(),
@@ -425,17 +426,20 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 			// does not seem to be the right spot to do so.
 			if !unpackedReply.Success {
 				node.nextIndex[p.id] -= 1
-			} else if idx < len(node.log)-1 {
+			} else if nextIdx < len(node.log) {
 				// We can consider the nextIndex to have been accepted by the peer
-				logIndicesToVotes.AddVote(idx+1, unpackedReply.ServerId)
-				if logIndicesToVotes.CountVotes(idx+1) >= (len(node.cluster)+1)/2 && node.log[idx+1].Term == node.getCurrentTerm() {
+				logIndicesToVotes.AddVote(nextIdx, unpackedReply.ServerId)
+				if logIndicesToVotes.CountVotes(nextIdx) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() {
 					// TODO: commit idx+1!
 				}
 				node.nextIndex[p.id] += 1
 			}
-			// TODO: handle AppendEntries response
 		}(peer)
 	}
+}
+
+func (node *Node) applyLogs() {
+
 }
 
 // State conversion functions
