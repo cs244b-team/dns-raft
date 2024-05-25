@@ -244,17 +244,17 @@ func (node *Node) runFollower() {
 		node.mu.Unlock()
 
 		<-electionTimer.C
-		if time.Since(node.getLastContact()) > electionTimer.timeout {
-			node.mu.Lock()
-			if node.getStatus() != Follower {
-				node.mu.Unlock()
-				return
-			}
 
-			node.convertToCandidate()
+		node.mu.Lock()
+		if time.Since(node.getLastContact()) > electionTimer.timeout {
+			log.Infof("node-%d election timer expired with no contact from leader or candidate", node.serverId)
+			if node.getStatus() == Follower {
+				node.convertToCandidate()
+			}
 			node.mu.Unlock()
 			return
 		}
+		node.mu.Unlock()
 		electionTimer = NewRandomTimer(node.config.ElectionTimeoutMin, node.config.ElectionTimeoutMax)
 	}
 }

@@ -152,7 +152,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	node.setLeaderId(args.LeaderId)
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (Section 5.3)
-	if args.PrevLogIndex != -1 && args.PrevLogIndex >= len(node.log) || node.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if args.PrevLogIndex != -1 && args.PrevLogIndex >= len(node.log) || (args.PrevLogIndex != -1 && node.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
 		*reply = response
 		return nil
 	}
@@ -197,8 +197,11 @@ func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx c
 	var reply ResponseType
 	call := p.client.Go(rpc, args, &reply, nil)
 	select {
-	case <-time.After(time.Duration(timeout)):
+	case <-time.After(time.Duration(timeout) * time.Millisecond):
+		log.Warnf("RPC %s to node-%d timed out", rpc, p.id)
 		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
+		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
+		// that is okay because they are idempotent.
 		return callRPC[ResponseType](p, rpc, args, timeout, ctx)
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
@@ -206,6 +209,7 @@ func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx c
 		}
 		return Some[ResponseType](reply), nil
 	case <-ctx.Done():
+		log.Debugf("RPC %s to node-%d cancelled", rpc, p.id)
 		return None[ResponseType](), errors.New("RPC cancelled")
 	}
 }
