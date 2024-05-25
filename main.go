@@ -1,33 +1,14 @@
 package main
 
 import (
+	"cs244b-team/dns-raft/common"
 	"cs244b-team/dns-raft/raft"
 	"flag"
 	"fmt"
-	"os"
 	"sync"
 
 	log "github.com/sirupsen/logrus"
 )
-
-func init_logging() {
-	// Get environment variable for log level (LOG_LEVEL)
-	logLevel := os.Getenv("LOG_LEVEL")
-	if logLevel == "" {
-		logLevel = "info"
-	}
-
-	// Set log level
-	level, err := log.ParseLevel(logLevel)
-	if err != nil {
-		log.Fatalf("Invalid log level: %s", logLevel)
-	}
-
-	log.SetLevel(level)
-	log.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
-	})
-}
 
 func runLocalCluster() {
 	cluster := []raft.Address{
@@ -79,7 +60,7 @@ func (n *nodes) Set(address string) error {
 }
 
 func main() {
-	init_logging()
+	common.InitLogger()
 
 	cluster := nodes{}
 	flag.Var(&cluster, "node", "ip:port of other nodes in the cluster")
