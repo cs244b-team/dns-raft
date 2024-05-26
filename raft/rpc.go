@@ -70,16 +70,6 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 		return nil
 	}
 
-	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote (Section 5.4.1)
-	if (!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId) && node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex) {
-		log.Debugf("node-%d granting vote to node-%d", node.serverId, args.CandidateId)
-
-		node.setVotedFor(args.CandidateId)
-		response.VoteGranted = true
-
-		node.setLastContact(time.Now())
-	}
-
 	// If RPC request contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 	if args.CandidateTerm > node.getCurrentTerm() {
 		log.Debugf(
@@ -90,6 +80,16 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 		)
 		node.convertToFollower(args.CandidateTerm)
 		response.CurrentTerm = node.getCurrentTerm()
+	}
+
+	// If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote (Section 5.4.1)
+	if (!node.getVotedFor().HasValue() || node.getVotedFor().Value() == args.CandidateId) && node.isCandidateUpToDate(args.LastLogTerm, args.LastLogIndex) {
+		log.Debugf("node-%d granting vote to node-%d", node.serverId, args.CandidateId)
+
+		node.setVotedFor(args.CandidateId)
+		response.VoteGranted = true
+
+		node.setLastContact(time.Now())
 	}
 
 	*reply = response
@@ -142,8 +142,14 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 
 	// TODO: reset election timeout on node if you receive valid appendentries RPC!
 
-	// Section 5.2, convert to follower if term > currentTerm
+	// If RPC request contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
 	if args.LeaderTerm > node.getCurrentTerm() {
+		log.Debugf(
+			"node-%d converting to follower because leader term %d > current term %d",
+			node.serverId,
+			args.LeaderTerm,
+			node.getCurrentTerm(),
+		)
 		node.convertToFollower(args.LeaderTerm)
 		response.CurrentTerm = node.getCurrentTerm()
 	}

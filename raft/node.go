@@ -442,6 +442,9 @@ func (node *Node) convertToFollower(term int) {
 	log.Infof("node-%d converting to follower", node.serverId)
 	node.setCurrentTerm(term)
 	node.setStatus(Follower)
+
+	// Since we always convert to follower when we receive a higher term, our votedFor should be reset
+	node.setVotedFor(-1)
 }
 
 func (node *Node) convertToCandidate() {
