@@ -42,13 +42,14 @@ func (c *DDNSClient) Run() {
 	go c.monitorIp(ch)
 	for addr := range ch {
 		record := c.createUpdateRecord(addr)
-		log.Infof("Updating %s to %s", c.domain, addr)
+		log.Debugf("Updating %s to %s", c.domain, addr)
 		c.sendUpdate(addr, record)
 	}
 }
 
 func (c *DDNSClient) sendUpdate(addr netip.Addr, record *dns.Msg) {
 	timer := time.NewTimer(UpdateTimeout)
+	start := time.Now()
 	for {
 		select {
 		case <-timer.C:
@@ -57,6 +58,7 @@ func (c *DDNSClient) sendUpdate(addr netip.Addr, record *dns.Msg) {
 		default:
 			err := c.sendUpdateOnce(record)
 			if err == nil {
+				log.Infof("Successfully updated %s to %s in %v", c.domain, addr, time.Since(start))
 				return
 			}
 			log.Errorf("Error updating %s to %s: %v", c.domain, addr, err)
@@ -65,7 +67,7 @@ func (c *DDNSClient) sendUpdate(addr netip.Addr, record *dns.Msg) {
 }
 
 func (c *DDNSClient) sendUpdateOnce(record *dns.Msg) error {
-	reply, rtt, err := c.dnsClient.ExchangeWithConn(record, c.serverConn)
+	reply, _, err := c.dnsClient.ExchangeWithConn(record, c.serverConn)
 
 	if err != nil {
 		return err
@@ -106,7 +108,6 @@ func (c *DDNSClient) sendUpdateOnce(record *dns.Msg) error {
 		return fmt.Errorf("server changed from %s to %s", oldServer, addr)
 	}
 
-	log.Infof("Record successfully updated in %v", rtt)
 	return nil
 }
 

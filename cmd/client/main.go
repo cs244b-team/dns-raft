@@ -5,6 +5,7 @@ import (
 	"cs244b-team/dns-raft/dns"
 	"flag"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
@@ -74,6 +75,15 @@ func monitorIp(updateChannel chan netip.Addr) {
 	}
 }
 
+func monitorIpEval(updateChannel chan netip.Addr) {
+	// Send updates as fast as possible
+	for {
+		ip := rand.Uint32()
+		bytes := [4]byte{byte(ip >> 24), byte(ip >> 16), byte(ip >> 8), byte(ip)}
+		updateChannel <- netip.AddrFrom4(bytes)
+	}
+}
+
 func main() {
 	common.InitLogger()
 
@@ -83,9 +93,9 @@ func main() {
 	eval := flag.Bool("eval", false, "Run in evaluation mode")
 	flag.Parse()
 
-	// TODO: implement monitorIp for evaluation mode (w/o fetching IP from AWS)
+	var monitorFunc func(chan netip.Addr) = monitorIp
 	if *eval {
-		log.Fatal("Evaluation mode not implemented")
+		monitorFunc = monitorIpEval
 	}
 
 	serverSplit := strings.Split(*server, ":")
@@ -93,6 +103,6 @@ func main() {
 		log.Fatalf("Invalid server address: %s", *server)
 	}
 
-	client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorIp)
+	client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
 	client.Run()
 }
