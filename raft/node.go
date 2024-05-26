@@ -353,6 +353,11 @@ func (node *Node) runLeader() {
 	logIndicesToVotes := make(IndexVoteCounter)
 	for {
 		node.mu.Lock()
+		if node.getStatus() != Leader {
+			node.mu.Unlock()
+			return
+		}
+
 		node.sendAppendEntries(ctx, logIndicesToVotes)
 		node.mu.Unlock()
 		<-heartbeatTicker.C
