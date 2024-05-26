@@ -1,13 +1,14 @@
 package raft
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"strconv"
-	"sync"
 
 	log "github.com/sirupsen/logrus"
+)
+
+const (
+	StorageFmtStr = "%d\n%d\n"
 )
 
 type Storage interface {
@@ -19,8 +20,7 @@ type Storage interface {
 
 // StableStorage is a two-line file that stores the current term and the voted-for node ID
 type StableStorage struct {
-	rwLock sync.RWMutex
-	path   string
+	file *os.File
 }
 
 func NewStableStorage(path string) *StableStorage {
@@ -33,107 +33,78 @@ func NewStableStorage(path string) *StableStorage {
 		}
 	}
 
-	return &StableStorage{
-		rwLock: sync.RWMutex{},
-		path:   path,
+	// Open the file for reading and writing
+	file, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		log.Fatalf("failed to open storage file: %s", err)
 	}
+
+	log.Debugf("opened storage file: %s", path)
+	return &StableStorage{file}
+}
+
+func (s *StableStorage) Close() error {
+	return s.file.Close()
 }
 
 func (s *StableStorage) Reset() error {
-	s.rwLock.Lock()
-	defer s.rwLock.Unlock()
 	return s.write(0, -1)
 }
 
 func (s *StableStorage) GetCurrentTerm() (int, error) {
-	s.rwLock.RLock()
-	defer s.rwLock.RUnlock()
-	return s.getCurrentTerm()
+	currentTerm, _, err := s.read()
+	return currentTerm, err
 }
 
 func (s *StableStorage) GetVotedFor() (Optional[int], error) {
-	s.rwLock.RLock()
-	defer s.rwLock.RUnlock()
-	return s.getVotedFor()
+	_, votedFor, err := s.read()
+	return votedFor, err
 }
 
 func (s *StableStorage) SetCurrentTerm(term int) error {
-	s.rwLock.Lock()
-	defer s.rwLock.Unlock()
-
-	votedFor, err := s.getVotedFor()
+	votedFor, err := s.GetVotedFor()
 	if err != nil {
 		return err
 	}
-
 	return s.write(term, votedFor.ValueOr(-1))
 }
 
 func (s *StableStorage) SetVotedFor(votedFor int) error {
-	s.rwLock.Lock()
-	defer s.rwLock.Unlock()
-
-	currentTerm, err := s.getCurrentTerm()
+	currentTerm, err := s.GetCurrentTerm()
 	if err != nil {
 		return err
 	}
-
 	return s.write(currentTerm, votedFor)
 }
 
-func (s *StableStorage) getCurrentTerm() (int, error) {
-	file, err := os.Open(s.path)
+func (s *StableStorage) read() (int, Optional[int], error) {
+	_, err := s.file.Seek(0, 0)
 	if err != nil {
-		return 0, err
+		return 0, None[int](), err
 	}
 
-	scanner := bufio.NewScanner(file)
-	scanner.Scan()
-
-	currentTerm, err := strconv.Atoi(scanner.Text())
+	var currentTerm int
+	var votedFor int
+	_, err = fmt.Fscanf(s.file, StorageFmtStr, &currentTerm, &votedFor)
 	if err != nil {
-		return 0, err
-	}
-
-	return currentTerm, nil
-}
-
-func (s *StableStorage) getVotedFor() (Optional[int], error) {
-	file, err := os.Open(s.path)
-	if err != nil {
-		return None[int](), err
-	}
-
-	scanner := bufio.NewScanner(file)
-	scanner.Scan()
-	scanner.Scan()
-
-	votedFor, err := strconv.Atoi(scanner.Text())
-	if err != nil {
-		return None[int](), err
+		return 0, None[int](), err
 	}
 
 	if votedFor == -1 {
-		return None[int](), nil
+		return currentTerm, None[int](), nil
 	}
 
-	return Some(votedFor), nil
+	return currentTerm, Some(votedFor), nil
 }
 
-// Create a temporary file to write the new state, then rename it to the original file
 func (s *StableStorage) write(currentTerm int, votedFor int) error {
-	file, err := os.OpenFile(s.path+".tmp", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	_, err := s.file.Seek(0, 0)
 	if err != nil {
 		return err
 	}
 
-	str := fmt.Sprintf("%d\n%d\n", currentTerm, votedFor)
-	_, err = file.WriteString(str)
-	if err != nil {
-		return err
-	}
-
-	err = os.Rename(s.path+".tmp", s.path)
+	str := fmt.Sprintf(StorageFmtStr, currentTerm, votedFor)
+	_, err = s.file.WriteString(str)
 	if err != nil {
 		return err
 	}
