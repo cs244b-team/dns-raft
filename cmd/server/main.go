@@ -7,7 +7,7 @@ import (
 )
 
 func handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
-    // TODO: a node will read from the Raft layer and respond to the query request
+	// TODO: a node will read from the Raft layer and respond to the query request
 }
 
 func handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {

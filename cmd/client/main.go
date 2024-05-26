@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cs244b-team/dns-raft/common"
 	"cs244b-team/dns-raft/dns"
 	"flag"
 	"io"
@@ -74,6 +75,8 @@ func monitorIp(updateChannel chan netip.Addr) {
 }
 
 func main() {
+	common.InitLogger()
+
 	zone := flag.String("zone", "example.com.", "DNS zone")
 	domain := flag.String("domain", "www.example.com.", "Domain to update")
 	server := flag.String("server", "127.0.0.1:8053", "DNS server")

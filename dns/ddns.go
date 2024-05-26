@@ -1,7 +1,10 @@
 package dns
 
 import (
+	"errors"
+	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
@@ -9,6 +12,7 @@ import (
 
 const (
 	ResourceRecordTTL = 64
+	UpdateTimeout     = 5 * time.Second
 )
 
 type DDNSClient struct {
@@ -31,6 +35,79 @@ func NewDDNSClient(zone string, domain string, server string, serverPort string,
 		dnsClient:  &client,
 		serverPort: serverPort,
 	}
+}
+
+func (c *DDNSClient) Run() {
+	ch := make(chan netip.Addr)
+	go c.monitorIp(ch)
+	for addr := range ch {
+		record := c.createUpdateRecord(addr)
+		log.Infof("Updating %s to %s", c.domain, addr)
+		c.sendUpdate(addr, record)
+	}
+}
+
+func (c *DDNSClient) sendUpdate(addr netip.Addr, record *dns.Msg) {
+	timer := time.NewTimer(UpdateTimeout)
+	for {
+		select {
+		case <-timer.C:
+			log.Errorf("Update for %s to %s timed out", c.domain, addr)
+			return
+		default:
+			err := c.sendUpdateOnce(record)
+			if err == nil {
+				return
+			}
+			log.Errorf("Error updating %s to %s: %v", c.domain, addr, err)
+		}
+	}
+}
+
+func (c *DDNSClient) sendUpdateOnce(record *dns.Msg) error {
+	reply, rtt, err := c.dnsClient.ExchangeWithConn(record, c.serverConn)
+
+	if err != nil {
+		return err
+	}
+
+	if reply.Id != record.Id {
+		return fmt.Errorf("received response with mismatched ID: %d != %d", reply.Id, record.Id)
+	}
+
+	if reply.Rcode != dns.RcodeSuccess {
+		return fmt.Errorf("received error response: %v", dns.RcodeToString[reply.Rcode])
+	}
+
+	// If there is an NS record we need to retry the update with this new server (updates go to the Raft leader)
+	if len(reply.Ns) > 0 {
+		server := reply.Ns[0].(*dns.NS).Ns
+
+		// Find the matching A record in the additional section
+		var addr string
+		for _, extra := range reply.Extra {
+			if extra.Header().Name == server {
+				addr = extra.(*dns.A).A.String()
+				break
+			}
+		}
+
+		if addr == "" {
+			return errors.New("no A record found for new server")
+		}
+
+		// Create a new client with the new server
+		oldServer := c.serverConn.RemoteAddr().String()
+		c.serverConn.Close()
+		client, conn := connect(addr, c.serverPort)
+		c.serverConn = conn
+		c.dnsClient = &client
+
+		return fmt.Errorf("server changed from %s to %s", oldServer, addr)
+	}
+
+	log.Infof("Record successfully updated in %v", rtt)
+	return nil
 }
 
 func connect(server string, serverPort string) (dns.Client, *dns.Conn) {
@@ -57,68 +134,6 @@ func (c *DDNSClient) createUpdateRecord(addr netip.Addr) *dns.Msg {
 		},
 	})
 	return m
-}
-
-func (c *DDNSClient) Run() {
-	ch := make(chan netip.Addr)
-	go c.monitorIp(ch)
-	for addr := range ch {
-		record := c.createUpdateRecord(addr)
-		log.Infof("Updating %s to %s", c.domain, addr)
-		c.sendUpdate(record)
-	}
-}
-
-func (c *DDNSClient) sendUpdate(record *dns.Msg) {
-	reply, rtt, err := c.dnsClient.ExchangeWithConn(record, c.serverConn)
-	if err != nil {
-		log.Warnf("Error updating record: %v", err)
-		return
-	}
-
-	if reply.Id != record.Id {
-		log.Warnf("Error updating record: ID mismatch")
-		return
-	}
-
-	if reply.Rcode != dns.RcodeSuccess {
-		log.Printf("Reply: %v", reply)
-		log.Warnf("Error updating record: %v", dns.RcodeToString[reply.Rcode])
-		return
-	}
-
-	// If there is an NS record we need to retry the update with this new server (updates go to the Raft leader)
-	if len(reply.Ns) > 0 {
-		log.Debugf("Error updating record: NS record found")
-		server := reply.Ns[0].(*dns.NS).Ns
-
-		// Find the matching A record in the additional section
-		var addr string
-		for _, extra := range reply.Extra {
-			if extra.Header().Name == server {
-				addr = extra.(*dns.A).A.String()
-				break
-			}
-		}
-
-		if addr == "" {
-			log.Warnf("Error updating record: No A record found for new nameserver %s", server)
-			return
-		}
-
-		c.serverConn.Close()
-
-		// Create a new client with the new server
-		client, conn := connect(addr, c.serverPort)
-		c.serverConn = conn
-		c.dnsClient = &client
-
-		// Retry the update
-		log.Infof("Retrying update with new server %s", addr+":"+c.serverPort)
-		c.sendUpdate(record)
-	}
-
-	log.Infof("Record updated in %v", rtt)
 }
 
 // type DDNSServer struct {
