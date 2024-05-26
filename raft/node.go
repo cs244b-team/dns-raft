@@ -2,11 +2,13 @@ package raft
 
 import (
 	"context"
+	"cs244b-team/dns-raft/common"
 	"fmt"
 	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	wal "github.com/tidwall/wal"
 )
 
 type NodeStatus uint32
@@ -22,7 +24,8 @@ type Node struct {
 	// Persistent state on all servers
 	storage *StableStorage
 
-	log []LogEntry
+	log         []LogEntry
+	logEntryWAL *wal.Log
 	// log     *StableLog
 
 	mu sync.Mutex // Lock to protect this node's states
@@ -57,7 +60,35 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	filename := fmt.Sprintf("/tmp/raft-node-%d.state", serverId)
 	r.storage = NewStableStorage(filename)
 
+	logEntryFilename := fmt.Sprintf("/tmp/raft-node-%d.logents", serverId)
+	walLog, err := wal.Open(logEntryFilename, nil)
+	if err != nil {
+		log.Fatalf("failed to open wal storage file: %s", err)
+	}
+	r.logEntryWAL = walLog
+
 	r.log = make([]LogEntry, 0)
+
+	// Load saved log entries
+	firstSavedIndex, err := r.logEntryWAL.FirstIndex()
+	if err != nil {
+		log.Fatalf("failed to get wal first index: %s", err)
+	}
+	lastSavedIndex, err := r.logEntryWAL.LastIndex()
+	if err != nil {
+		log.Fatalf("failed to get wal last index: %s", err)
+	}
+	for i := firstSavedIndex; i <= lastSavedIndex; i++ {
+		data, err := r.logEntryWAL.Read(i)
+		if err != nil {
+			log.Fatalf("failed to load wal entry: %s", err)
+		}
+		entry, err := common.DecodeFromBytes[LogEntry](data)
+		if err != nil {
+			log.Fatalf("failed to decode wal entry to bytes: %s", err)
+		}
+		r.log = append(r.log, entry)
+	}
 
 	r.commitIndex = -1
 	r.lastApplied = -1
@@ -359,6 +390,22 @@ func (node *Node) runLeader() {
 	// TODO
 }
 
+func (node *Node) persistentEntryToLog(entry LogEntry, logIndex uint64, truncateBack bool) error {
+	bytes, err := common.EncodeToBytes(entry)
+	if err != nil {
+		return err
+	}
+	if truncateBack {
+		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
+			return err
+		}
+	}
+	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
+		return err
+	}
+	return nil
+}
+
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
 func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes IndexVoteCounter) {
@@ -413,7 +460,7 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 				if logIndicesToVotes.CountVotes(nextIdx) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() {
 					commitIdx := min(node.commitIndex, nextIdx)
 					node.setCommitIndex(commitIdx)
-					node.applyLogs()
+					node.applyLogCommands()
 				}
 				node.nextIndex[p.id] += 1
 			}
@@ -422,17 +469,13 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 }
 
 func applyCommand(entry LogEntry) {
-	// apply string to update kv_store
+	// TODO: apply command string to update kv_store
 }
 
-func (node *Node) applyLogs() {
+func (node *Node) applyLogCommands() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
-		node.mu.TryLock()
 		applyCommand(node.log[idx])
-		// write to disk
-		node.mu.Unlock()
 	}
-	node.mu.TryLock()
 	node.lastApplied = node.commitIndex
 }
 

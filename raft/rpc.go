@@ -164,23 +164,33 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it (Section 5.3)
 	startInsertingAtIdx := args.PrevLogIndex + 1
+	entriesTruncateIndex := 0
 	for i, entry := range args.Entries {
+		entriesTruncateIndex = i
 		if startInsertingAtIdx+i < len(node.log) && node.log[startInsertingAtIdx+i].Term != entry.Term {
 			node.log = node.log[:startInsertingAtIdx+i]
-			args.Entries = args.Entries[i:] // the prior entries are already in the log
 			break
 		}
 	}
+	args.Entries = args.Entries[entriesTruncateIndex:] // the prior entries are already in the log
 
-	// 4. Append any new entries not already in the log
+	// 4. Append any new entries not already in the log and persist them to storage
+	prevNumEntries := len(node.log)
 	node.log = append(node.log, args.Entries...)
+	for i, entry := range args.Entries {
+		persistErr := node.persistentEntryToLog(entry, uint64(prevNumEntries+i), i == 0)
+		if persistErr != nil {
+			*reply = response
+			return persistErr
+		}
+	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > 0 && args.LeaderCommit > node.getCommitIndex() {
 		lastLogIndex, _ := node.lastLogIndexAndTerm()
 		commitIdx := min(args.LeaderCommit, lastLogIndex)
 		node.setCommitIndex(commitIdx)
-		node.applyLogs()
+		node.applyLogCommands()
 	}
 
 	// TODO: synch
