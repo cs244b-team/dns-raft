@@ -6,6 +6,19 @@ import (
 	"github.com/miekg/dns"
 )
 
+func handleRequest(w dns.ResponseWriter, r *dns.Msg) {
+	if r.Opcode == dns.OpcodeQuery {
+		handleQueryRequest(w, r)
+	} else if r.Opcode == dns.OpcodeUpdate {
+		handleUpdateRequest(w, r)
+	} else {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.SetRcode(r, dns.RcodeNotImplemented)
+		w.WriteMsg(m)
+	}
+}
+
 func handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
 	// TODO: a node will read from the Raft layer and respond to the query request
 }
@@ -50,7 +63,7 @@ func msgAcceptFunc(dh dns.Header) dns.MsgAcceptAction {
 }
 
 func main() {
-	dns.HandleFunc(".", handleUpdateRequest)
+	dns.HandleFunc(".", handleRequest)
 	server := &dns.Server{Addr: "127.0.0.1:8053", Net: "udp"}
 	server.MsgAcceptFunc = msgAcceptFunc
 	if err := server.ListenAndServe(); err != nil {
