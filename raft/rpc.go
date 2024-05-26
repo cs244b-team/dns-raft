@@ -140,9 +140,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 		return nil
 	}
 
-	// TODO: reset election timeout on node if you receive valid appendentries RPC!
-
-	// If RPC request contains term T > currentTerm: set currentTerm = T, convert to follower (Section 5.1)
+	// Section 5.2, convert to follower if term > currentTerm
 	if args.LeaderTerm > node.getCurrentTerm() {
 		log.Debugf(
 			"node-%d converting to follower because leader term %d > current term %d",
