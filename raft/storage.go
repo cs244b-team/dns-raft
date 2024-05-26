@@ -11,16 +11,11 @@ const (
 	StorageFmtStr = "%d\n%d\n"
 )
 
-type Storage interface {
-	GetCurrentTerm() (int, error)
-	SetCurrentTerm(term int) error
-	GetVotedFor() (Optional[int], error)
-	SetVotedFor(votedFor int) error
-}
-
 // StableStorage is a two-line file that stores the current term and the voted-for node ID
 type StableStorage struct {
-	file *os.File
+	file        *os.File
+	currentTerm int
+	votedFor    Optional[int]
 }
 
 func NewStableStorage(path string) *StableStorage {
@@ -40,7 +35,15 @@ func NewStableStorage(path string) *StableStorage {
 	}
 
 	log.Debugf("opened storage file: %s", path)
-	return &StableStorage{file}
+	ss := StableStorage{file, 0, None[int]()}
+	_term, _votedFor, err := ss.read()
+	if err == nil {
+		ss.currentTerm = _term
+		ss.votedFor = _votedFor
+	} else {
+		log.Fatalf("failed to re-read storage file: %s", err)
+	}
+	return &ss
 }
 
 func (s *StableStorage) Close() error {
@@ -51,30 +54,20 @@ func (s *StableStorage) Reset() error {
 	return s.write(0, -1)
 }
 
-func (s *StableStorage) GetCurrentTerm() (int, error) {
-	currentTerm, _, err := s.read()
-	return currentTerm, err
+func (s *StableStorage) GetCurrentTerm() int {
+	return s.currentTerm
 }
 
-func (s *StableStorage) GetVotedFor() (Optional[int], error) {
-	_, votedFor, err := s.read()
-	return votedFor, err
+func (s *StableStorage) GetVotedFor() Optional[int] {
+	return s.votedFor
 }
 
 func (s *StableStorage) SetCurrentTerm(term int) error {
-	votedFor, err := s.GetVotedFor()
-	if err != nil {
-		return err
-	}
-	return s.write(term, votedFor.ValueOr(-1))
+	return s.write(term, s.GetVotedFor().ValueOr(-1))
 }
 
 func (s *StableStorage) SetVotedFor(votedFor int) error {
-	currentTerm, err := s.GetCurrentTerm()
-	if err != nil {
-		return err
-	}
-	return s.write(currentTerm, votedFor)
+	return s.write(s.GetCurrentTerm(), votedFor)
 }
 
 func (s *StableStorage) read() (int, Optional[int], error) {

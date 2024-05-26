@@ -101,10 +101,7 @@ func (node *Node) ConnectToCluster() {
 
 // Helper functions for getting states, in case we want to implement persistence / atomic operations
 func (node *Node) getCurrentTerm() int {
-	currentTerm, err := node.storage.GetCurrentTerm()
-	if err != nil {
-		log.Errorf("node-%d failed to get currentTerm: %s", node.serverId, err)
-	}
+	currentTerm := node.storage.GetCurrentTerm()
 	return currentTerm
 }
 
@@ -116,10 +113,7 @@ func (node *Node) setCurrentTerm(currentTerm int) {
 }
 
 func (node *Node) getVotedFor() Optional[int] {
-	votedFor, err := node.storage.GetVotedFor()
-	if err != nil {
-		log.Errorf("node-%d failed to get votedFor: %s", node.serverId, err)
-	}
+	votedFor := node.storage.GetVotedFor()
 	return votedFor
 }
 

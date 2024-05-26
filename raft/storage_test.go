@@ -16,10 +16,7 @@ func TestStorageCurrentTerm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	term2, err := s.GetCurrentTerm()
-	if err != nil {
-		t.Fatal(err)
-	}
+	term2 := s.GetCurrentTerm()
 
 	if term != term2 {
 		t.Fatal("expected term to be equal")
@@ -31,10 +28,7 @@ func TestStorageCurrentTerm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	term2, err = s.GetCurrentTerm()
-	if err != nil {
-		t.Fatal(err)
-	}
+	term2 = s.GetCurrentTerm()
 
 	if term != term2 {
 		t.Fatal("expected term to be equal")
@@ -52,10 +46,7 @@ func TestStorageVotedFor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	votedFor2, err := s.GetVotedFor()
-	if err != nil {
-		t.Fatal(err)
-	}
+	votedFor2 := s.GetVotedFor()
 
 	if !votedFor2.HasValue() {
 		t.Fatal("expected votedFor to be set")
@@ -71,10 +62,7 @@ func TestStorageVotedForEmpty(t *testing.T) {
 	s := NewStableStorage(path)
 	defer os.Remove(path)
 
-	votedFor, err := s.GetVotedFor()
-	if err != nil {
-		t.Fatal(err)
-	}
+	votedFor := s.GetVotedFor()
 
 	if votedFor.HasValue() {
 		t.Fatal("expected votedFor to be empty")
@@ -92,19 +80,13 @@ func TestStorageAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	term2, err := s.GetCurrentTerm()
-	if err != nil {
-		t.Fatal(err)
-	}
+	term2 := s.GetCurrentTerm()
 
 	if term2 != term {
 		t.Fatal("expected term to be equal")
 	}
 
-	votedForOpt, err := s.GetVotedFor()
-	if err != nil {
-		t.Fatal(err)
-	}
+	votedForOpt := s.GetVotedFor()
 
 	if votedForOpt.HasValue() {
 		t.Fatal("expected votedFor to be empty")
@@ -116,10 +98,7 @@ func TestStorageAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	votedFor2, err := s.GetVotedFor()
-	if err != nil {
-		t.Fatal(err)
-	}
+	votedFor2 := s.GetVotedFor()
 
 	if !votedFor2.HasValue() {
 		t.Fatal("expected votedFor to be set")
