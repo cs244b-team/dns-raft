@@ -63,11 +63,27 @@ func (s *StableStorage) GetVotedFor() Optional[int] {
 }
 
 func (s *StableStorage) SetCurrentTerm(term int) error {
-	return s.write(term, s.GetVotedFor().ValueOr(-1))
+	err := s.write(term, s.GetVotedFor().ValueOr(-1))
+	if err != nil {
+		return err
+	}
+	s.currentTerm = term
+	return nil
 }
 
 func (s *StableStorage) SetVotedFor(votedFor int) error {
-	return s.write(s.GetCurrentTerm(), votedFor)
+	err := s.write(s.GetCurrentTerm(), votedFor)
+	if err != nil {
+		return err
+	}
+
+	if votedFor == -1 {
+		s.votedFor = None[int]()
+	} else {
+		s.votedFor = Some(votedFor)
+	}
+
+	return nil
 }
 
 func (s *StableStorage) read() (int, Optional[int], error) {
