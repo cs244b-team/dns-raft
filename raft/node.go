@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -19,10 +20,9 @@ const (
 
 type Node struct {
 	// Persistent state on all servers
-	// storage *StableStorage
-	currentTerm int
-	votedFor    Optional[int]
-	log         []LogEntry
+	storage *StableStorage
+
+	log []LogEntry
 	// log     *StableLog
 
 	mu sync.Mutex // Lock to protect this node's states
@@ -54,12 +54,8 @@ type Node struct {
 func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r := new(Node)
 
-	// stateFile := fmt.Sprintf("/tmp/raft-node-%d.state", serverId)
-	// r.storage = NewStableStorage(stateFile)
-	// r.storage.Reset()
-
-	r.currentTerm = 0
-	r.votedFor = None[int]()
+	filename := fmt.Sprintf("/tmp/raft-node-%d.state", serverId)
+	r.storage = NewStableStorage(filename)
 
 	r.log = make([]LogEntry, 0)
 
@@ -103,51 +99,35 @@ func (node *Node) ConnectToCluster() {
 	}
 }
 
-// // Helper functions for getting states, in case we want to implement persistence / atomic operations
-// func (node *Node) getCurrentTerm() int {
-// 	currentTerm, err := node.storage.GetCurrentTerm()
-// 	if err != nil {
-// 		log.Errorf("node-%d failed to get currentTerm: %s", node.serverId, err)
-// 	}
-// 	return currentTerm
-// }
-
-// func (node *Node) setCurrentTerm(currentTerm int) {
-// 	err := node.storage.SetCurrentTerm(currentTerm)
-// 	if err != nil {
-// 		log.Errorf("node-%d failed to set currentTerm: %s", node.serverId, err)
-// 	}
-// }
-
-// func (node *Node) getVotedFor() Optional[int] {
-// 	votedFor, err := node.storage.GetVotedFor()
-// 	if err != nil {
-// 		log.Errorf("node-%d failed to get votedFor: %s", node.serverId, err)
-// 	}
-// 	return votedFor
-// }
-
-// func (node *Node) setVotedFor(votedFor int) {
-// 	err := node.storage.SetVotedFor(votedFor)
-// 	if err != nil {
-// 		log.Errorf("node-%d failed to set votedFor: %s", node.serverId, err)
-// 	}
-// }
-
+// Helper functions for getting states, in case we want to implement persistence / atomic operations
 func (node *Node) getCurrentTerm() int {
-	return node.currentTerm
+	currentTerm, err := node.storage.GetCurrentTerm()
+	if err != nil {
+		log.Errorf("node-%d failed to get currentTerm: %s", node.serverId, err)
+	}
+	return currentTerm
 }
 
 func (node *Node) setCurrentTerm(currentTerm int) {
-	node.currentTerm = currentTerm
+	err := node.storage.SetCurrentTerm(currentTerm)
+	if err != nil {
+		log.Errorf("node-%d failed to set currentTerm: %s", node.serverId, err)
+	}
 }
 
 func (node *Node) getVotedFor() Optional[int] {
-	return node.votedFor
+	votedFor, err := node.storage.GetVotedFor()
+	if err != nil {
+		log.Errorf("node-%d failed to get votedFor: %s", node.serverId, err)
+	}
+	return votedFor
 }
 
 func (node *Node) setVotedFor(votedFor int) {
-	node.votedFor.Set(votedFor)
+	err := node.storage.SetVotedFor(votedFor)
+	if err != nil {
+		log.Errorf("node-%d failed to set votedFor: %s", node.serverId, err)
+	}
 }
 
 func (node *Node) getStatus() NodeStatus {
