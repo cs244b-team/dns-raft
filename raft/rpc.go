@@ -206,7 +206,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 // Call RPC on peer p. It will retry every TIMEOUT ms and return the reply (or an error) until CTX errors. Blocking.
 func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
-	if p == nil && p.Connect() != nil {
+	if p.client == nil && p.Connect() != nil {
 		return None[ResponseType](), errors.New("Could not connect")
 	}
 	var reply ResponseType
@@ -231,7 +231,7 @@ func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx c
 
 func callRPCNoRetry[ResponseType any](p *Peer, rpc string, args any, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
-	if p == nil && p.Connect() != nil {
+	if p.client == nil && p.Connect() != nil {
 		return None[ResponseType](), errors.New("Could not connect")
 	}
 	var reply ResponseType
