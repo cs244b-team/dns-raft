@@ -78,16 +78,18 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	if err != nil {
 		log.Fatalf("failed to get wal last index: %s", err)
 	}
-	for i := firstSavedIndex; i <= lastSavedIndex; i++ {
-		data, err := r.logEntryWAL.Read(i)
-		if err != nil {
-			log.Fatalf("failed to load wal entry: %s", err)
+	if lastSavedIndex > 0 {
+		for i := firstSavedIndex; i <= lastSavedIndex; i++ {
+			data, err := r.logEntryWAL.Read(i)
+			if err != nil {
+				log.Fatalf("failed to load wal entry: %s", err)
+			}
+			entry, err := common.DecodeFromBytes[LogEntry](data)
+			if err != nil {
+				log.Fatalf("failed to decode wal entry to bytes: %s", err)
+			}
+			r.log = append(r.log, entry)
 		}
-		entry, err := common.DecodeFromBytes[LogEntry](data)
-		if err != nil {
-			log.Fatalf("failed to decode wal entry to bytes: %s", err)
-		}
-		r.log = append(r.log, entry)
 	}
 
 	r.commitIndex = -1

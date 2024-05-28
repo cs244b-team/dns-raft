@@ -178,7 +178,8 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	prevNumEntries := len(node.log)
 	node.log = append(node.log, args.Entries...)
 	for i, entry := range args.Entries {
-		persistErr := node.persistentEntryToLog(entry, uint64(prevNumEntries+i), i == 0)
+		// WAL log entries are 1-indexed
+		persistErr := node.persistentEntryToLog(entry, uint64(prevNumEntries+i+1), i == 0)
 		if persistErr != nil {
 			*reply = response
 			return persistErr
