@@ -1,8 +1,23 @@
 package raft
 
+import "net"
+
+type CommandType uint8
+
+const (
+	Update CommandType = iota
+	Remove
+)
+
+type Command struct {
+	Type  CommandType
+	Key   string
+	Value Optional[net.IP]
+}
+
 type LogEntry struct {
 	Term int
-	// data generic?w 4y
+	Cmd  Command
 }
 
 // Each entry contains command for state machine, and term when entry was received by leader (first index is 0!)

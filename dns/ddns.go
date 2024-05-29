@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"cs244b-team/dns-raft/raft"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -137,12 +138,118 @@ func (c *DDNSClient) createUpdateRecord(addr netip.Addr) *dns.Msg {
 	return m
 }
 
-// type DDNSServer struct {
-// }
+type DDNSServer struct {
+	inner    *dns.Server
+	raftNode *raft.Node
+}
 
-// func (s *DDNSServer) Run() {
+func NewDDNSServer(
+	id int,
+	cluster []raft.Address,
+	config raft.Config,
+) *DDNSServer {
+	server := &DDNSServer{
+		inner:    &dns.Server{Addr: "0.0.0.0:8053", Net: "udp"},
+		raftNode: raft.NewNode(id, cluster, config),
+	}
+	server.inner.MsgAcceptFunc = server.msgAcceptFunc
+	dns.HandleFunc(".", func(w dns.ResponseWriter, m *dns.Msg) {
+		server.handleRequest(w, m)
+	})
+	return server
+}
 
-// }
+func (s *DDNSServer) Run() {
+	go func() {
+		if err := s.inner.ListenAndServe(); err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+	s.raftNode.ConnectToCluster()
+	s.raftNode.Run()
+}
 
-// func (s *DDNSServer) handleRequest() {
-// }
+func (s *DDNSServer) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
+	if r.Opcode == dns.OpcodeQuery {
+		s.handleQueryRequest(w, r)
+	} else if r.Opcode == dns.OpcodeUpdate {
+		s.handleUpdateRequest(w, r)
+	} else {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.SetRcode(r, dns.RcodeNotImplemented)
+		w.WriteMsg(m)
+	}
+}
+
+func (s *DDNSServer) handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
+	m := new(dns.Msg)
+	m.SetReply(r)
+
+	for _, question := range r.Question {
+		ip, ok := s.raftNode.GetValue(question.Name)
+		if !ok {
+			log.Warnf("`A` record not found for %s", question.Name)
+			m.Rcode = dns.RcodeNameError
+		} else {
+			answer := &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   question.Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: ip,
+			}
+			m.Answer = append(m.Answer, answer)
+		}
+	}
+
+	w.WriteMsg(m)
+}
+
+func (s *DDNSServer) handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {
+
+	// 1. are we the leader?
+	// 	- if not, send DNS response with IP of leader based on leader's Id
+	//  - if so, then ask raft to apply the change
+
+	// s.raftNode.SetValue(<key>, <value>)
+
+	m := new(dns.Msg)
+	m.SetReply(r)
+
+	println("Received update request:")
+	println(r.String())
+
+	// Raft leader would send a reply of the following format to the DDNS client
+	// m.Ns = append(m.Ns, &dns.NS{
+	// 	Hdr: dns.RR_Header{
+	// 		Name:   "example.com.",
+	// 		Rrtype: dns.TypeNS,
+	// 		Class:  dns.ClassINET,
+	// 		Ttl:    60,
+	// 	},
+	// 	Ns: "ns1.example.com.",
+	// })
+
+	// m.Extra = append(m.Extra, &dns.A{
+	// 	Hdr: dns.RR_Header{
+	// 		Name:   "ns1.example.com.",
+	// 		Rrtype: dns.TypeA,
+	// 		Class:  dns.ClassINET,
+	// 		Ttl:    60,
+	// 	},
+	// 	A: net.ParseIP("192.168.0.1").To4(),
+	// })
+
+	w.WriteMsg(m)
+}
+
+func (s *DDNSServer) msgAcceptFunc(dh dns.Header) dns.MsgAcceptAction {
+	opcode := int(dh.Bits>>11) & 0xF
+	if opcode == dns.OpcodeUpdate {
+		return dns.MsgAccept
+	}
+	return dns.DefaultMsgAcceptFunc(dh)
+}

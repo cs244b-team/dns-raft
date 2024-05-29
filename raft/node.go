@@ -4,6 +4,7 @@ import (
 	"context"
 	"cs244b-team/dns-raft/common"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	wal "github.com/tidwall/wal"
 )
 
-type NodeStatus uint32
+type NodeStatus uint8
 
 const (
 	Follower NodeStatus = iota // default
@@ -51,7 +52,8 @@ type Node struct {
 	// Configuration for timeouts and heartbeats
 	config Config
 
-	kv_store map[string]any
+	// DNS record store
+	kv_store map[string]net.IP
 }
 
 func NewNode(serverId int, cluster []Address, config Config) *Node {
@@ -195,6 +197,18 @@ func (node *Node) getLastContact() time.Time {
 
 func (node *Node) setLastContact(lastContact time.Time) {
 	node.lastContact = lastContact
+}
+
+func (node *Node) GetValue(key string) (net.IP, bool) {
+	value, ok := node.kv_store[key]
+	if !ok {
+		return nil, false
+	}
+	return value, true
+}
+
+func (node *Node) setValue(key string, value net.IP) {
+	node.kv_store[key] = value
 }
 
 // Determine if a candidate's log is at least as up-to-date as the receiver's log
@@ -389,7 +403,7 @@ func (node *Node) runLeader() {
 		node.mu.Unlock()
 		<-heartbeatTicker.C
 	}
-	// TODO
+	// TODO No-op commit (client interaction, section 8 of paper)
 }
 
 func (node *Node) persistentEntryToLog(entry LogEntry, logIndex uint64, truncateBack bool) error {
@@ -470,13 +484,22 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 	}
 }
 
-func applyCommand(entry LogEntry) {
-	// TODO: apply command string to update kv_store
+func (node *Node) applyCommand(entry LogEntry) {
+	if entry.Cmd.Type == Remove {
+		delete(node.kv_store, entry.Cmd.Key)
+	} else if entry.Cmd.Type == Update {
+		if !entry.Cmd.Value.HasValue() {
+			log.Warnf("Update for %s expected value to be set, but none was found", entry.Cmd.Key)
+		}
+		node.setValue(entry.Cmd.Key, entry.Cmd.Value.Value())
+	} else {
+		log.Fatalf("Unsupported Raft command: %v", entry.Cmd.Type)
+	}
 }
 
 func (node *Node) applyLogCommands() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
-		applyCommand(node.log[idx])
+		node.applyCommand(node.log[idx])
 	}
 	node.lastApplied = node.commitIndex
 }

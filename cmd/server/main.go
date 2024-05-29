@@ -1,72 +1,80 @@
 package main
 
 import (
-	log "github.com/sirupsen/logrus"
+	"cs244b-team/dns-raft/common"
+	"cs244b-team/dns-raft/dns"
+	"cs244b-team/dns-raft/raft"
+	"flag"
+	"fmt"
+	"sync"
 
-	"github.com/miekg/dns"
+	log "github.com/sirupsen/logrus"
 )
 
-func handleRequest(w dns.ResponseWriter, r *dns.Msg) {
-	if r.Opcode == dns.OpcodeQuery {
-		handleQueryRequest(w, r)
-	} else if r.Opcode == dns.OpcodeUpdate {
-		handleUpdateRequest(w, r)
-	} else {
-		m := new(dns.Msg)
-		m.SetReply(r)
-		m.SetRcode(r, dns.RcodeNotImplemented)
-		w.WriteMsg(m)
+func runLocalCluster() {
+	cluster := []raft.Address{
+		raft.NewAddress("localhost", 9000),
+		raft.NewAddress("localhost", 9001),
+		raft.NewAddress("localhost", 9002),
 	}
-}
 
-func handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
-	// TODO: a node will read from the Raft layer and respond to the query request
-}
+	config := raft.DefaultConfig()
 
-func handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {
-	m := new(dns.Msg)
-	m.SetReply(r)
-
-	println("Received update request:")
-	println(r.String())
-
-	// Raft leader would send a reply of the following format to the DDNS client
-	// m.Ns = append(m.Ns, &dns.NS{
-	// 	Hdr: dns.RR_Header{
-	// 		Name:   "example.com.",
-	// 		Rrtype: dns.TypeNS,
-	// 		Class:  dns.ClassINET,
-	// 		Ttl:    60,
-	// 	},
-	// 	Ns: "ns1.example.com.",
-	// })
-
-	// m.Extra = append(m.Extra, &dns.A{
-	// 	Hdr: dns.RR_Header{
-	// 		Name:   "ns1.example.com.",
-	// 		Rrtype: dns.TypeA,
-	// 		Class:  dns.ClassINET,
-	// 		Ttl:    60,
-	// 	},
-	// 	A: net.ParseIP("192.168.0.1").To4(),
-	// })
-
-	w.WriteMsg(m)
-}
-
-func msgAcceptFunc(dh dns.Header) dns.MsgAcceptAction {
-	opcode := int(dh.Bits>>11) & 0xF
-	if opcode == dns.OpcodeUpdate {
-		return dns.MsgAccept
+	// Create array of RaftNode objects
+	nodes := make([]*raft.Node, len(cluster))
+	for i := range cluster {
+		nodes[i] = raft.NewNode(i, cluster, config)
 	}
-	return dns.DefaultMsgAcceptFunc(dh)
+
+	// Connect to all nodes in the cluster
+	for _, node := range nodes {
+		node.ConnectToCluster()
+	}
+
+	// Start the RaftNodes
+	wg := sync.WaitGroup{}
+	for _, node := range nodes {
+		wg.Add(1)
+		go func(node *raft.Node) {
+			node.Run()
+			wg.Done()
+		}(node)
+	}
+
+	// Wait for all nodes to finish
+	wg.Wait()
+}
+
+type cluster []raft.Address
+
+func (n *cluster) String() string {
+	return fmt.Sprintf("%v", *n)
+}
+
+func (n *cluster) Set(address string) error {
+	id, err := raft.AddressFromString(address)
+	if err != nil {
+		return err
+	}
+	*n = append(*n, id)
+	return nil
 }
 
 func main() {
-	dns.HandleFunc(".", handleRequest)
-	server := &dns.Server{Addr: "127.0.0.1:8053", Net: "udp"}
-	server.MsgAcceptFunc = msgAcceptFunc
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	common.InitLogger()
+
+	cluster := cluster{}
+	flag.Var(&cluster, "node", "ip:port of other nodes in the cluster")
+	id := flag.Int("id", 0, "id of this node")
+	flag.Parse()
+
+	if len(cluster) == 0 {
+		log.Warn("Cluster not specified, running local cluster")
+		runLocalCluster()
 	}
+
+	raftConfig := raft.DefaultConfig()
+	server := dns.NewDDNSServer(*id, cluster, raftConfig)
+
+	server.Run()
 }
