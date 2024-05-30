@@ -20,25 +20,36 @@ func runLocalCluster() {
 
 	config := raft.DefaultConfig()
 
+	var server *dns.DDNSServer
 	// Create array of RaftNode objects
 	nodes := make([]*raft.Node, len(cluster))
 	for i := range cluster {
-		nodes[i] = raft.NewNode(i, cluster, config)
+		if i == 0 {
+			server = dns.NewDDNSServer(i, cluster, config)
+		} else {
+			nodes[i] = raft.NewNode(i, cluster, config)
+		}
 	}
 
 	// Connect to all nodes in the cluster
-	for _, node := range nodes {
-		node.ConnectToCluster()
+	for i, node := range nodes {
+		if i == 0 {
+			go server.Run()
+		} else {
+			node.ConnectToCluster()
+		}
 	}
 
 	// Start the RaftNodes
 	wg := sync.WaitGroup{}
-	for _, node := range nodes {
-		wg.Add(1)
-		go func(node *raft.Node) {
-			node.Run()
-			wg.Done()
-		}(node)
+	for i, node := range nodes {
+		if i > 0 {
+			wg.Add(1)
+			go func(node *raft.Node) {
+				node.Run()
+				wg.Done()
+			}(node)
+		}
 	}
 
 	// Wait for all nodes to finish

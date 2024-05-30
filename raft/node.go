@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"cs244b-team/dns-raft/common"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -41,10 +42,11 @@ type Node struct {
 	matchIndex map[int]int // For each server, index of highest log entry known to be replicated on server
 
 	// Server and cluster state
-	serverId int       // the id of this server
-	leaderId int       // the id of the leader, or -1 if unknown
-	cluster  []Address // List of all node addresses in the cluster
-	peers    []*Peer   // Peer information and RPC clients
+	serverId int               // the id of this server
+	leaderId int               // the id of the leader, or -1 if unknown
+	cluster  []Address         // List of all node addresses in the cluster
+	peers    []*Peer           // Peer information and RPC clients
+	updates  map[int]chan bool // TODO
 
 	// For followers to know that they are receiving RPCs from other nodes
 	lastContact time.Time
@@ -61,6 +63,7 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 
 	filename := fmt.Sprintf("/tmp/raft-node-%d.state", serverId)
 	r.storage = NewStableStorage(filename)
+	r.storage.Reset()
 
 	logEntryFilename := fmt.Sprintf("/tmp/raft-node-%d.logents", serverId)
 	walLog, err := wal.Open(logEntryFilename, nil)
@@ -70,6 +73,9 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r.logEntryWAL = walLog
 
 	r.log = make([]LogEntry, 0)
+
+	r.updates = make(map[int]chan bool)
+	r.kv_store = make(map[string]net.IP)
 
 	// Load saved log entries
 	firstSavedIndex, err := r.logEntryWAL.FirstIndex()
@@ -205,6 +211,37 @@ func (node *Node) GetValue(key string) (net.IP, bool) {
 		return nil, false
 	}
 	return value, true
+}
+
+func (node *Node) UpdateValue(key string, value net.IP) error {
+	node.mu.Lock()
+	if node.getStatus() == Leader {
+		node.log = append(node.log, LogEntry{node.getCurrentTerm(), Command{Update, key, Some(value)}})
+		updateChannel := make(chan bool, 1)
+
+		index := len(node.log)
+		log.Debugf("update value index: %d", index)
+		node.updates[index] = updateChannel
+		node.mu.Unlock()
+
+		// Wait for updateTimeout amount of time,
+		updateTimer := time.After(time.Duration(node.config.UpdateTimeout) * time.Millisecond)
+
+		select {
+		case <-updateTimer:
+			return errors.New(fmt.Sprintf("Log entry %d update timeout", index))
+		case <-updateChannel:
+			return nil
+		}
+	}
+
+	// TODO:
+	// if node.getStatus() == Follower {
+	// Make RPC to leader and wait
+	// }
+
+	node.mu.Unlock()
+	return nil
 }
 
 func (node *Node) setValue(key string, value net.IP) {
@@ -391,7 +428,6 @@ func (node *Node) runLeader() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
 	defer cancel()
-	logIndicesToVotes := make(IndexVoteCounter)
 	for {
 		node.mu.Lock()
 		if node.getStatus() != Leader {
@@ -399,7 +435,7 @@ func (node *Node) runLeader() {
 			return
 		}
 
-		node.sendAppendEntries(ctx, logIndicesToVotes)
+		node.sendAppendEntries(ctx)
 		node.mu.Unlock()
 		<-heartbeatTicker.C
 	}
@@ -413,7 +449,9 @@ func (node *Node) persistentEntryToLog(entry LogEntry, logIndex uint64, truncate
 	}
 	if truncateBack {
 		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
-			return err
+			// TODO: handle empty log
+			// return err
+			log.Warnf("TruncateBack failed with logIndex: %d", logIndex)
 		}
 	}
 	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
@@ -424,7 +462,7 @@ func (node *Node) persistentEntryToLog(entry LogEntry, logIndex uint64, truncate
 
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
-func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes IndexVoteCounter) {
+func (node *Node) sendAppendEntries(ctx context.Context) {
 	if node.getStatus() != Leader {
 		return
 	}
@@ -451,7 +489,7 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 			node.mu.Unlock()
 			reply, err := callRPCNoRetry[AppendEntriesResponse](p, "Node.AppendEntries", args, ctx)
 			if err != nil {
-				log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
+				log.Errorf("node-%d experienced AppendEntries error: %s", p.id, err)
 				return
 			}
 			unpackedReply := reply.Value()
@@ -472,9 +510,10 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 				node.nextIndex[p.id] -= 1
 			} else if nextIdx < len(node.log) {
 				// We can consider the nextIndex to have been accepted by the peer
-				logIndicesToVotes.AddVote(nextIdx, unpackedReply.ServerId)
-				if logIndicesToVotes.CountVotes(nextIdx) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() {
-					commitIdx := min(node.commitIndex, nextIdx)
+				node.matchIndex[p.id] = nextIdx
+				// TODO: fix majority vote
+				if node.countLogMatches(nextIdx) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() && nextIdx > node.commitIndex {
+					commitIdx := nextIdx
 					node.setCommitIndex(commitIdx)
 					node.applyLogCommands()
 				}
@@ -482,6 +521,17 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 			}
 		}(peer)
 	}
+}
+
+func (node *Node) countLogMatches(logIndex int) int {
+	// Make sure the lock has been acquired before calling!
+	numMatches := 0
+	for _, peer := range node.peers {
+		if node.matchIndex[peer.id] >= logIndex {
+			numMatches++
+		}
+	}
+	return numMatches
 }
 
 func (node *Node) applyCommand(entry LogEntry) {
@@ -497,9 +547,22 @@ func (node *Node) applyCommand(entry LogEntry) {
 	}
 }
 
+// Lock is held by sendAppendEntries or AppendEntries RPC, so no lock is needed here
 func (node *Node) applyLogCommands() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
 		node.applyCommand(node.log[idx])
+
+		// If this leader node has any clients blocked waiting for their update to be committed, signal them
+		if node.getStatus() == Leader {
+			updateChannel, ok := node.updates[idx+1]
+			if !ok {
+				log.Errorf("Leader attempted to apply log command, but client update channel is missing at index: %d", idx+1)
+			} else {
+				updateChannel <- true
+				close(updateChannel)
+			}
+			// TODO: remove update logindex: channel mapping
+		}
 	}
 	node.lastApplied = node.commitIndex
 }

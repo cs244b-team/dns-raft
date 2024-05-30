@@ -209,39 +209,21 @@ func (s *DDNSServer) handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 func (s *DDNSServer) handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {
-
-	// 1. are we the leader?
-	// 	- if not, send DNS response with IP of leader based on leader's Id
-	//  - if so, then ask raft to apply the change
-
-	// s.raftNode.SetValue(<key>, <value>)
-
 	m := new(dns.Msg)
 	m.SetReply(r)
 
+	if len(r.Ns) == 0 {
+		m.Rcode = dns.RcodeFormatError
+	} else {
+		err := s.raftNode.UpdateValue(r.Ns[0].Header().Name, r.Ns[0].(*dns.A).A)
+		if err != nil {
+			m.Rcode = dns.RcodeServerFailure
+			log.Errorf("Failed to update: %v", err)
+		}
+	}
+
 	println("Received update request:")
-	println(r.String())
-
-	// Raft leader would send a reply of the following format to the DDNS client
-	// m.Ns = append(m.Ns, &dns.NS{
-	// 	Hdr: dns.RR_Header{
-	// 		Name:   "example.com.",
-	// 		Rrtype: dns.TypeNS,
-	// 		Class:  dns.ClassINET,
-	// 		Ttl:    60,
-	// 	},
-	// 	Ns: "ns1.example.com.",
-	// })
-
-	// m.Extra = append(m.Extra, &dns.A{
-	// 	Hdr: dns.RR_Header{
-	// 		Name:   "ns1.example.com.",
-	// 		Rrtype: dns.TypeA,
-	// 		Class:  dns.ClassINET,
-	// 		Ttl:    60,
-	// 	},
-	// 	A: net.ParseIP("192.168.0.1").To4(),
-	// })
+	println(m.String())
 
 	w.WriteMsg(m)
 }
