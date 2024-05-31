@@ -179,7 +179,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	node.log = append(node.log, args.Entries...)
 	for i, entry := range args.Entries {
 		// WAL log entries are 1-indexed
-		persistErr := node.persistentEntryToLog(entry, uint64(prevNumEntries+i+1), i == 0)
+		persistErr := node.persistLogEntry(entry, uint64(prevNumEntries+i+1), i == 0)
 		if persistErr != nil {
 			*reply = response
 			return persistErr
@@ -187,7 +187,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-	if args.LeaderCommit > 0 && args.LeaderCommit > node.getCommitIndex() {
+	if args.LeaderCommit >= 0 && args.LeaderCommit > node.getCommitIndex() {
 		lastLogIndex, _ := node.lastLogIndexAndTerm()
 		commitIdx := min(args.LeaderCommit, lastLogIndex)
 		node.setCommitIndex(commitIdx)
@@ -204,41 +204,49 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 }
 
 // Call RPC on peer p. It will retry every TIMEOUT ms and return the reply (or an error) until CTX errors. Blocking.
-func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
+func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
 	if p.client == nil && p.Connect() != nil {
-		return None[ResponseType](), errors.New("Could not connect")
+		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
-	call := p.client.Go(rpc, args, &reply, nil)
+	call := p.client.Go(rpcType, args, &reply, nil)
 	select {
 	case <-time.After(time.Duration(timeout) * time.Millisecond):
-		log.Warnf("RPC %s to node-%d timed out", rpc, p.id)
+		log.Warnf("RPC %s to node-%d timed out", rpcType, p.id)
 		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
 		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
 		// that is okay because they are idempotent.
-		return callRPC[ResponseType](p, rpc, args, timeout, ctx)
+		return callRPC[ResponseType](p, rpcType, args, timeout, ctx)
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
+			if resp.Error == rpc.ErrShutdown {
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
+				p.client = nil
+			}
 			return None[ResponseType](), resp.Error
 		}
 		return Some[ResponseType](reply), nil
 	case <-ctx.Done():
-		log.Debugf("RPC %s to node-%d cancelled", rpc, p.id)
+		log.Debugf("RPC %s to node-%d cancelled", rpcType, p.id)
 		return None[ResponseType](), errors.New("RPC cancelled")
 	}
 }
 
-func callRPCNoRetry[ResponseType any](p *Peer, rpc string, args any, ctx context.Context) (Optional[ResponseType], error) {
+func callRPCNoRetry[ResponseType any](p *Peer, rpcType string, args any, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
 	if p.client == nil && p.Connect() != nil {
-		return None[ResponseType](), errors.New("Could not connect")
+		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
-	call := p.client.Go(rpc, args, &reply, nil)
+	call := p.client.Go(rpcType, args, &reply, nil)
 	select {
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
+			if resp.Error == rpc.ErrShutdown {
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
+				p.client = nil
+			}
 			return None[ResponseType](), resp.Error
 		}
 		return Some[ResponseType](reply), nil
@@ -248,10 +256,10 @@ func callRPCNoRetry[ResponseType any](p *Peer, rpc string, args any, ctx context
 }
 
 // Calls RPC on all peers in parallel. It will ignore all errors and send any replies through CHANNEL. Nonblocking.
-func callPeers[ResponseType any](node *Node, rpc string, args any, timeout int, ctx context.Context, channel chan<- ResponseType) {
+func callPeers[ResponseType any](node *Node, rpcType string, args any, timeout int, ctx context.Context, channel chan<- ResponseType) {
 	for _, peer := range node.peers {
 		go func(peer *Peer) {
-			reply, err := callRPC[ResponseType](peer, rpc, args, timeout, ctx)
+			reply, err := callRPC[ResponseType](peer, rpcType, args, timeout, ctx)
 			if err == nil && reply.HasValue() {
 				channel <- reply.Value()
 			}

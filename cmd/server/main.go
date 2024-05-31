@@ -11,7 +11,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func runLocalCluster() {
+func runLocalCluster(port int) {
 	cluster := []raft.Address{
 		raft.NewAddress("localhost", 9000),
 		raft.NewAddress("localhost", 9001),
@@ -25,7 +25,7 @@ func runLocalCluster() {
 	nodes := make([]*raft.Node, len(cluster))
 	for i := range cluster {
 		if i == 0 {
-			server = dns.NewDDNSServer(i, cluster, config)
+			server = dns.NewDDNSServer(port, i, cluster, config)
 		} else {
 			nodes[i] = raft.NewNode(i, cluster, config)
 		}
@@ -74,18 +74,19 @@ func (n *cluster) Set(address string) error {
 func main() {
 	common.InitLogger()
 
-	cluster := cluster{}
-	flag.Var(&cluster, "node", "ip:port of other nodes in the cluster")
-	id := flag.Int("id", 0, "id of this node")
+	raftCluster := cluster{}
+	flag.Var(&raftCluster, "node", "ip:port of other nodes in the cluster")
+	raftNodeId := flag.Int("id", 0, "id of this node")
+	dnsListenPort := flag.Int("port", 8053, "DNS server port")
 	flag.Parse()
 
-	if len(cluster) == 0 {
+	if len(raftCluster) == 0 {
 		log.Warn("Cluster not specified, running local cluster")
-		runLocalCluster()
+		runLocalCluster(*dnsListenPort)
 	}
 
 	raftConfig := raft.DefaultConfig()
-	server := dns.NewDDNSServer(*id, cluster, raftConfig)
-
+	server := dns.NewDDNSServer(*dnsListenPort, *raftNodeId, raftCluster, raftConfig)
+	
 	server.Run()
 }

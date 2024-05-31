@@ -144,13 +144,15 @@ type DDNSServer struct {
 }
 
 func NewDDNSServer(
-	id int,
-	cluster []raft.Address,
-	config raft.Config,
+	dnsListenPort int,
+	raftNodeId int,
+	raftCluster []raft.Address,
+	raftConfig raft.Config,
 ) *DDNSServer {
+	address := fmt.Sprintf("0.0.0.0:%v", dnsListenPort)
 	server := &DDNSServer{
-		inner:    &dns.Server{Addr: "0.0.0.0:8053", Net: "udp"},
-		raftNode: raft.NewNode(id, cluster, config),
+		inner:    &dns.Server{Addr: address, Net: "udp"},
+		raftNode: raft.NewNode(raftNodeId, raftCluster, raftConfig),
 	}
 	server.inner.MsgAcceptFunc = server.msgAcceptFunc
 	dns.HandleFunc(".", func(w dns.ResponseWriter, m *dns.Msg) {
@@ -222,8 +224,8 @@ func (s *DDNSServer) handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
-	println("Received update request:")
-	println(m.String())
+	// println("Received update request:")
+	// println(m.String())
 
 	w.WriteMsg(m)
 }

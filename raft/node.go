@@ -130,12 +130,30 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 }
 
 func (node *Node) ConnectToCluster() {
+	var retryPeers []*Peer
 	for _, peer := range node.peers {
 		err := peer.Connect()
 		if err != nil {
-			log.Fatalf("node-%d failed to connect to node-%d, reason: %s", node.serverId, peer.id, err)
+			log.Warnf("node-%d failed to connect to node-%d, reason: %s", node.serverId, peer.id, err);
+			retryPeers = append(retryPeers, peer)
 		} else {
 			log.Debugf("node-%d connected to node-%d", node.serverId, peer.id)
+		}
+	}
+
+	for _, peer := range retryPeers {
+		failedCounter := 0
+		err := peer.Connect()
+		for err != nil && failedCounter < 10 {
+			log.Warnf("node-%d failed to connect on RETRY to node-%d, reason: %s", node.serverId, peer.id, err);
+			failedCounter++
+			time.Sleep(1 * time.Second)
+			err = peer.Connect()
+		}
+		if err != nil {
+			log.Debugf("node-%d connected to node-%d", node.serverId, peer.id)
+		} else if failedCounter >= 10 {
+			log.Warnf("node-%d failed to connect to node-%d after 10 RETRIES, reason: %s", node.serverId, peer.id, err);
 		}
 	}
 }
@@ -216,11 +234,12 @@ func (node *Node) GetValue(key string) (net.IP, bool) {
 func (node *Node) UpdateValue(key string, value net.IP) error {
 	node.mu.Lock()
 	if node.getStatus() == Leader {
-		node.log = append(node.log, LogEntry{node.getCurrentTerm(), Command{Update, key, Some(value)}})
-		updateChannel := make(chan bool, 1)
-
+		entry := LogEntry{node.getCurrentTerm(), Command{Update, key, Some(value)}}
+		node.log = append(node.log, entry)
 		index := len(node.log)
-		log.Debugf("update value index: %d", index)
+		node.persistLogEntry(entry, uint64(index), false)
+
+		updateChannel := make(chan bool, 1)
 		node.updates[index] = updateChannel
 		node.mu.Unlock()
 
@@ -442,18 +461,24 @@ func (node *Node) runLeader() {
 	// TODO No-op commit (client interaction, section 8 of paper)
 }
 
-func (node *Node) persistentEntryToLog(entry LogEntry, logIndex uint64, truncateBack bool) error {
+func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack bool) error {
 	bytes, err := common.EncodeToBytes(entry)
 	if err != nil {
 		return err
 	}
-	if truncateBack {
+
+	lastSavedIndex, err := node.logEntryWAL.LastIndex()
+	if err != nil {
+		log.Fatalf("failed to get wal last index: %s", err)
+	}
+	
+	// If log is non-empty, we may need to truncate
+	if lastSavedIndex > 0 && truncateBack {
 		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
-			// TODO: handle empty log
-			// return err
 			log.Warnf("TruncateBack failed with logIndex: %d", logIndex)
 		}
 	}
+
 	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
 		return err
 	}
@@ -550,6 +575,7 @@ func (node *Node) applyCommand(entry LogEntry) {
 // Lock is held by sendAppendEntries or AppendEntries RPC, so no lock is needed here
 func (node *Node) applyLogCommands() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
+		log.Debugf("node-%d applying command at log index: %d", node.serverId, idx)
 		node.applyCommand(node.log[idx])
 
 		// If this leader node has any clients blocked waiting for their update to be committed, signal them
