@@ -134,7 +134,7 @@ func (node *Node) ConnectToCluster() {
 	for _, peer := range node.peers {
 		err := peer.Connect()
 		if err != nil {
-			log.Warnf("node-%d failed to connect to node-%d, reason: %s", node.serverId, peer.id, err);
+			log.Warnf("node-%d failed to connect to node-%d, reason: %s", node.serverId, peer.id, err)
 			retryPeers = append(retryPeers, peer)
 		} else {
 			log.Debugf("node-%d connected to node-%d", node.serverId, peer.id)
@@ -145,7 +145,7 @@ func (node *Node) ConnectToCluster() {
 		failedCounter := 0
 		err := peer.Connect()
 		for err != nil && failedCounter < 10 {
-			log.Warnf("node-%d failed to connect on RETRY to node-%d, reason: %s", node.serverId, peer.id, err);
+			log.Warnf("node-%d failed to connect on RETRY to node-%d, reason: %s", node.serverId, peer.id, err)
 			failedCounter++
 			time.Sleep(1 * time.Second)
 			err = peer.Connect()
@@ -153,7 +153,7 @@ func (node *Node) ConnectToCluster() {
 		if err != nil {
 			log.Debugf("node-%d connected to node-%d", node.serverId, peer.id)
 		} else if failedCounter >= 10 {
-			log.Warnf("node-%d failed to connect to node-%d after 10 RETRIES, reason: %s", node.serverId, peer.id, err);
+			log.Warnf("node-%d failed to connect to node-%d after 10 RETRIES, reason: %s", node.serverId, peer.id, err)
 		}
 	}
 }
@@ -471,7 +471,7 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 	if err != nil {
 		log.Fatalf("failed to get wal last index: %s", err)
 	}
-	
+
 	// If log is non-empty, we may need to truncate
 	if lastSavedIndex > 0 && truncateBack {
 		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
@@ -536,8 +536,8 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 			} else if nextIdx < len(node.log) {
 				// We can consider the nextIndex to have been accepted by the peer
 				node.matchIndex[p.id] = nextIdx
-				// TODO: fix majority vote
-				if node.countLogMatches(nextIdx) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() && nextIdx > node.commitIndex {
+				// The leader always has a log match for nextIdx
+				if (node.countLogMatches(nextIdx)+1) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() && nextIdx > node.commitIndex {
 					commitIdx := nextIdx
 					node.setCommitIndex(commitIdx)
 					node.applyLogCommands()
