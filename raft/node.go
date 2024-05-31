@@ -129,6 +129,15 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	return r
 }
 
+func (node *Node) getLeaderPeer() *Peer {
+	for _, peer := range node.peers {
+		if peer.id == node.leaderId {
+			return peer
+		}
+	}
+	return nil
+}
+
 func (node *Node) ConnectToCluster() {
 	var retryPeers []*Peer
 	for _, peer := range node.peers {

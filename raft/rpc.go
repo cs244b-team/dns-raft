@@ -96,6 +96,35 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 	return nil
 }
 
+type ForwardToLeaderArgs struct {
+	key   string
+	value net.IP
+}
+
+type ForwardToLeaderResponse struct {
+}
+
+// Invoked by candidates to gather votes, not called directly by this RaftNode (Section 5.2)
+func (node *Node) ForwardToLeader(args ForwardToLeaderArgs, reply *ForwardToLeaderResponse) error {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if node.getStatus() == Leader {
+		return node.UpdateValue(args.key, args.value)
+	} else {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		leaderPeer := node.getLeaderPeer()
+
+		if node.leaderId == -1 || leaderPeer != nil {
+			return errors.New("No leader found")
+		}
+
+		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
+		return err
+	}
+}
+
 type AppendEntriesArgs struct {
 	LeaderTerm   int
 	LeaderId     int        // So follower can redirect clients
