@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -56,6 +57,18 @@ type Node struct {
 
 	// DNS record store
 	kv_store map[string]net.IP
+}
+
+func (node *Node) ResetWAL() {
+	logEntryFilename := fmt.Sprintf("/tmp/raft-node-%d.logents", node.serverId)
+	if err := os.Remove(logEntryFilename); err != nil {
+		log.Fatalf("failed to remove wal storage file: %s", err)
+	}
+	walLog, err := wal.Open(logEntryFilename, nil)
+	if err != nil {
+		log.Fatalf("failed to re-open wal storage file when resetting: %s", err)
+	}
+	node.logEntryWAL = walLog
 }
 
 func NewNode(serverId int, cluster []Address, config Config) *Node {
@@ -252,7 +265,7 @@ func (node *Node) UpdateValue(key string, value net.IP) error {
 
 		ctx := context.WithoutCancel(context.Background())
 		node.sendAppendEntries(ctx)
-		
+
 		node.mu.Unlock()
 
 		// Wait for updateTimeout amount of time,
@@ -365,6 +378,8 @@ func (node *Node) runCandidate() {
 		return
 	}
 
+	node.setLeaderId(-1) // Reset the leaderId since we are in an election
+
 	// Call RequestVote on peers
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -463,6 +478,7 @@ func (node *Node) runLeader() {
 	for peerId := range node.nextIndex {
 		node.nextIndex[peerId] = len(node.log)
 	}
+	node.setLeaderId(node.serverId) // Record that we are the leader
 	node.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
@@ -482,6 +498,10 @@ func (node *Node) runLeader() {
 }
 
 func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack bool) error {
+	if logIndex <= 0 {
+		log.Fatalf("Tried to write to an invalid index in our 1-indexed persistent log")
+	}
+
 	bytes, err := common.EncodeToBytes(entry)
 	if err != nil {
 		return err
@@ -489,19 +509,34 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 
 	lastSavedIndex, err := node.logEntryWAL.LastIndex()
 	if err != nil {
-		log.Fatalf("failed to get wal last index: %s", err)
+		return fmt.Errorf("failed to get wal last index: %s", err)
 	}
 
 	// If log is non-empty, we may need to truncate
-	if truncateBack && logIndex < lastSavedIndex {
-		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
-			log.Warnf("logEntryWAL.TruncateBack failed with logIndex: %d", logIndex)
+	if truncateBack {
+		// We only need to truncate the log if logIndex is within the current log
+		if logIndex <= lastSavedIndex {
+			if logIndex > 1 {
+				if err = node.logEntryWAL.TruncateBack(logIndex - 1); err != nil {
+					return fmt.Errorf("logEntryWAL.TruncateBack failed with logIndex: %d", logIndex)
+				}
+			} else {
+				// We want to insert into logIndex 1, so we must clear the entire log
+				node.ResetWAL()
+			}
 		}
+	} else if logIndex <= lastSavedIndex {
+		log.Fatalf("logEntryWAL received a request to write w/o truncateBack to logIndex %d when the log has been persisted until %d", logIndex, lastSavedIndex)
+	}
+
+	// By now, we have truncated the log, as needed. We should append the log entry now.
+	if logIndex > lastSavedIndex+1 {
+		// We want to write past the lastSavedIndex, which leaves a hole in our log
+		return fmt.Errorf("attempted to persist log with a hole at index %d when log goes to index %d", logIndex, lastSavedIndex)
 	}
 
 	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
-		log.Warnf("logEntryWAL.Write failed with logIndex: %d", logIndex)
-		return err
+		return fmt.Errorf("logEntryWAL.Write failed with logIndex: %d with err %v", logIndex, err)
 	}
 	return nil
 }
@@ -554,10 +589,10 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 			// If nextIdx is stale, we know that this AppendEntries request is outdated and may have already been serviced
 			// while the lock wasn't held during the RPC call.
 			idx, _ = node.prevLogIndexAndTerm(p.id)
-			if idx + 1 > nextIdx {
+			if idx+1 > nextIdx {
 				return
 			}
-			
+
 			// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
 			// does not seem to be the right spot to do so.
 			if !unpackedReply.Success {
