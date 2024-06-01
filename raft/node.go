@@ -63,7 +63,6 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 
 	filename := fmt.Sprintf("/tmp/raft-node-%d.state", serverId)
 	r.storage = NewStableStorage(filename)
-	r.storage.Reset()
 
 	logEntryFilename := fmt.Sprintf("/tmp/raft-node-%d.logents", serverId)
 	walLog, err := wal.Open(logEntryFilename, nil)
@@ -250,14 +249,14 @@ func (node *Node) UpdateValue(key string, value net.IP) error {
 
 		updateChannel := make(chan bool, 1)
 		node.updates[index] = updateChannel
+
+		ctx := context.WithoutCancel(context.Background())
+		node.sendAppendEntries(ctx)
+		
 		node.mu.Unlock()
 
 		// Wait for updateTimeout amount of time,
 		updateTimer := time.After(time.Duration(node.config.UpdateTimeout) * time.Millisecond)
-
-		// TODO: immediately broadcast this update
-		// node.sendAppendEntries(ctx)
-
 		select {
 		case <-updateTimer:
 			return errors.New(fmt.Sprintf("Log entry %d update timeout", index))
@@ -496,11 +495,12 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 	// If log is non-empty, we may need to truncate
 	if truncateBack && logIndex < lastSavedIndex {
 		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
-			log.Warnf("TruncateBack failed with logIndex: %d", logIndex)
+			log.Warnf("logEntryWAL.TruncateBack failed with logIndex: %d", logIndex)
 		}
 	}
 
 	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
+		log.Warnf("logEntryWAL.Write failed with logIndex: %d", logIndex)
 		return err
 	}
 	return nil
@@ -550,6 +550,14 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 				node.convertToFollower(unpackedReply.CurrentTerm)
 				return
 			}
+
+			// If nextIdx is stale, we know that this AppendEntries request is outdated and may have already been serviced
+			// while the lock wasn't held during the RPC call.
+			idx, _ = node.prevLogIndexAndTerm(p.id)
+			if idx + 1 > nextIdx {
+				return
+			}
+			
 			// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
 			// does not seem to be the right spot to do so.
 			if !unpackedReply.Success {
