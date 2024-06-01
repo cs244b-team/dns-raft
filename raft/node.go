@@ -255,6 +255,9 @@ func (node *Node) UpdateValue(key string, value net.IP) error {
 		// Wait for updateTimeout amount of time,
 		updateTimer := time.After(time.Duration(node.config.UpdateTimeout) * time.Millisecond)
 
+		// TODO: immediately broadcast this update
+		// node.sendAppendEntries(ctx)
+
 		select {
 		case <-updateTimer:
 			return errors.New(fmt.Sprintf("Log entry %d update timeout", index))
@@ -262,17 +265,18 @@ func (node *Node) UpdateValue(key string, value net.IP) error {
 			return nil
 		}
 	} else if node.getStatus() == Follower {
-		defer node.mu.Unlock()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		leaderPeer := node.getLeaderPeer()
-		if node.leaderId == -1 || leaderPeer != nil {
+		if leaderPeer == nil {
+			node.mu.Unlock()
 			return errors.New(fmt.Sprintf("No leader found for update request for key %s, value %v was sent to node with status %v", key, value, node.getStatus()))
 		}
-		args := ForwardToLeaderArgs{key: key, value: value}
-		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
 
+		args := ForwardToLeaderArgs{Key: key, Value: value}
+		node.mu.Unlock()
+		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "Node.ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
 		return err
 	} else {
 		node.mu.Unlock()
@@ -490,7 +494,7 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 	}
 
 	// If log is non-empty, we may need to truncate
-	if lastSavedIndex > 0 && truncateBack {
+	if truncateBack && logIndex < lastSavedIndex {
 		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
 			log.Warnf("TruncateBack failed with logIndex: %d", logIndex)
 		}

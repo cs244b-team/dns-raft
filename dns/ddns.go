@@ -217,6 +217,7 @@ func (s *DDNSServer) handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if len(r.Ns) == 0 {
 		m.Rcode = dns.RcodeFormatError
 	} else {
+		// TODO get update type
 		err := s.raftNode.UpdateValue(r.Ns[0].Header().Name, r.Ns[0].(*dns.A).A)
 		if err != nil {
 			m.Rcode = dns.RcodeServerFailure

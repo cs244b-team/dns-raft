@@ -97,31 +97,32 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 }
 
 type ForwardToLeaderArgs struct {
-	key   string
-	value net.IP
+	Key   string
+	Value net.IP
 }
 
 type ForwardToLeaderResponse struct {
-	key     string
-	value   net.IP
-	success bool
+	Key     string
+	Value   net.IP
+	Success bool
 }
 
 // Invoked by followers to forward update requests to the leader
 func (node *Node) ForwardToLeader(args ForwardToLeaderArgs, reply *ForwardToLeaderResponse) error {
 	node.mu.Lock()
-	defer node.mu.Unlock()
 
-	response := ForwardToLeaderResponse{key: args.key, value: args.value, success: false}
+	response := ForwardToLeaderResponse{Key: args.Key, Value: args.Value, Success: false}
 
 	if node.getStatus() == Leader {
-		err := node.UpdateValue(args.key, args.value)
-		response.success = err != nil
+		node.mu.Unlock()
+		err := node.UpdateValue(args.Key, args.Value)
+		response.Success = err != nil
 		*reply = response
 		return err
 	} else {
 		*reply = response
-		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent from follower to non-leader with status %v", args.key, args.value, node.getStatus()))
+		node.mu.Unlock()
+		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent from follower to non-leader with status %v", args.Key, args.Value, node.getStatus()))
 	}
 }
 
