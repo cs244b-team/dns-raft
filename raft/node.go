@@ -261,15 +261,23 @@ func (node *Node) UpdateValue(key string, value net.IP) error {
 		case <-updateChannel:
 			return nil
 		}
+	} else if node.getStatus() == Follower {
+		defer node.mu.Unlock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		leaderPeer := node.getLeaderPeer()
+		if node.leaderId == -1 || leaderPeer != nil {
+			return errors.New(fmt.Sprintf("No leader found for update request for key %s, value %v was sent to node with status %v", key, value, node.getStatus()))
+		}
+		args := ForwardToLeaderArgs{key: key, value: value}
+		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
+
+		return err
+	} else {
+		node.mu.Unlock()
+		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent to non-follower, non-leader node with status %v", key, value, node.getStatus()))
 	}
-
-	// TODO:
-	// if node.getStatus() == Follower {
-	// Make RPC to leader and wait
-	// }
-
-	node.mu.Unlock()
-	return nil
 }
 
 func (node *Node) setValue(key string, value net.IP) {

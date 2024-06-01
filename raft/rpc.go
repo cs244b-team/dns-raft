@@ -102,26 +102,26 @@ type ForwardToLeaderArgs struct {
 }
 
 type ForwardToLeaderResponse struct {
+	key     string
+	value   net.IP
+	success bool
 }
 
-// Invoked by candidates to gather votes, not called directly by this RaftNode (Section 5.2)
+// Invoked by followers to forward update requests to the leader
 func (node *Node) ForwardToLeader(args ForwardToLeaderArgs, reply *ForwardToLeaderResponse) error {
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
+	response := ForwardToLeaderResponse{key: args.key, value: args.value, success: false}
+
 	if node.getStatus() == Leader {
-		return node.UpdateValue(args.key, args.value)
-	} else {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		leaderPeer := node.getLeaderPeer()
-
-		if node.leaderId == -1 || leaderPeer != nil {
-			return errors.New("No leader found")
-		}
-
-		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
+		err := node.UpdateValue(args.key, args.value)
+		response.success = err != nil
+		*reply = response
 		return err
+	} else {
+		*reply = response
+		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent from follower to non-leader with status %v", args.key, args.value, node.getStatus()))
 	}
 }
 
