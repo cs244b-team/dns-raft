@@ -1,10 +1,22 @@
 package raft
 
-type LogEntry struct {
-	Term int
-	// data generic?w 4y
+import "github.com/miekg/dns"
+
+type CommandType uint8
+
+const (
+	Update CommandType = iota
+	Remove
+	Blank
+)
+
+type Command struct {
+	Type  CommandType
+	Key   string
+	Value Optional[dns.RR]
 }
 
-// Each entry contains command for state machine, and term when entry was received by leader (first index is 0!)
-type StableLog struct {
+type LogEntry struct {
+	Term int
+	Cmd  Command
 }

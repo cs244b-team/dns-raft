@@ -9,6 +9,8 @@ import (
 	"net/rpc"
 	"time"
 
+	"github.com/miekg/dns"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -96,6 +98,40 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 	return nil
 }
 
+type ForwardToLeaderArgs struct {
+	Key     string
+	CmdType CommandType
+	Value   Optional[dns.RR]
+}
+
+type ForwardToLeaderResponse struct {
+	Key     string
+	Value   Optional[dns.RR]
+	Success bool
+}
+
+// Invoked by followers to forward update requests to the leader
+func (node *Node) ForwardToLeader(args ForwardToLeaderArgs, reply *ForwardToLeaderResponse) error {
+	node.mu.Lock()
+
+	response := ForwardToLeaderResponse{Key: args.Key, Value: args.Value, Success: false}
+
+	if node.getStatus() == Leader {
+		node.mu.Unlock()
+		err := node.UpdateValue(args.Key, args.CmdType, args.Value)
+		if err != nil {
+			log.Error("node-%d UpdateValue failed: %v", node.serverId, err)
+		}
+		response.Success = err != nil
+		*reply = response
+		return err
+	} else {
+		*reply = response
+		node.mu.Unlock()
+		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent from follower to non-leader with status %v", args.Key, args.Value, node.getStatus()))
+	}
+}
+
 type AppendEntriesArgs struct {
 	LeaderTerm   int
 	LeaderId     int        // So follower can redirect clients
@@ -123,7 +159,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	// RPC from current leader or granting vote to candidate:
 	// convert to candidate
 
-	// TODO (1) ...
+	node.setLastContact(time.Now())
 
 	response := AppendEntriesResponse{CurrentTerm: node.getCurrentTerm(), Success: false, ServerId: node.serverId}
 
@@ -164,38 +200,45 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it (Section 5.3)
 	startInsertingAtIdx := args.PrevLogIndex + 1
-	entriesTruncateIndex := 0
+	logTruncated := false
+	startEntriesAtIdx := 0
 	for i, entry := range args.Entries {
-		entriesTruncateIndex = i
-		if startInsertingAtIdx+i < len(node.log) && node.log[startInsertingAtIdx+i].Term != entry.Term {
-			node.log = node.log[:startInsertingAtIdx+i]
+		// index i of args.Entries will be inserted at index startInsertingAtIdx + i of the log
+		if startInsertingAtIdx+i >= len(node.log) {
+			// We've reached the end of the log, so we have no more conflicts
 			break
 		}
+		if node.log[startInsertingAtIdx+i].Term != entry.Term {
+			node.log = node.log[:startInsertingAtIdx+i]
+			startEntriesAtIdx = i // We start inserting from index i of args.Entries
+			logTruncated = true
+			break
+		} else {
+			startEntriesAtIdx = i + 1 // We start inserting from index i+1 of args.Entries
+		}
 	}
-	args.Entries = args.Entries[entriesTruncateIndex:] // the prior entries are already in the log
+	args.Entries = args.Entries[startEntriesAtIdx:] // the prior entries are already in the log
 
 	// 4. Append any new entries not already in the log and persist them to storage
 	prevNumEntries := len(node.log)
-	node.log = append(node.log, args.Entries...)
 	for i, entry := range args.Entries {
 		// WAL log entries are 1-indexed
-		persistErr := node.persistentEntryToLog(entry, uint64(prevNumEntries+i+1), i == 0)
+		persistErr := node.persistLogEntry(entry, uint64(prevNumEntries+i+1), logTruncated && i == 0)
 		if persistErr != nil {
 			*reply = response
 			return persistErr
 		}
+		// Only append to the log after it's been written to the WAL
+		node.log = append(node.log, entry)
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-	if args.LeaderCommit > 0 && args.LeaderCommit > node.getCommitIndex() {
+	if args.LeaderCommit >= 0 && args.LeaderCommit > node.getCommitIndex() {
 		lastLogIndex, _ := node.lastLogIndexAndTerm()
 		commitIdx := min(args.LeaderCommit, lastLogIndex)
 		node.setCommitIndex(commitIdx)
 		node.applyLogCommands()
 	}
-
-	// TODO: synch
-	node.setLastContact(time.Now())
 
 	response.Success = true
 	*reply = response
@@ -204,41 +247,49 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 }
 
 // Call RPC on peer p. It will retry every TIMEOUT ms and return the reply (or an error) until CTX errors. Blocking.
-func callRPC[ResponseType any](p *Peer, rpc string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
+func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
 	if p.client == nil && p.Connect() != nil {
-		return None[ResponseType](), errors.New("Could not connect")
+		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
-	call := p.client.Go(rpc, args, &reply, nil)
+	call := p.client.Go(rpcType, args, &reply, nil)
 	select {
 	case <-time.After(time.Duration(timeout) * time.Millisecond):
-		log.Warnf("RPC %s to node-%d timed out", rpc, p.id)
+		log.Warnf("RPC %s to node-%d timed out", rpcType, p.id)
 		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
 		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
 		// that is okay because they are idempotent.
-		return callRPC[ResponseType](p, rpc, args, timeout, ctx)
+		return callRPC[ResponseType](p, rpcType, args, timeout, ctx)
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
+			if resp.Error == rpc.ErrShutdown {
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
+				p.client = nil
+			}
 			return None[ResponseType](), resp.Error
 		}
 		return Some[ResponseType](reply), nil
 	case <-ctx.Done():
-		log.Debugf("RPC %s to node-%d cancelled", rpc, p.id)
+		log.Debugf("RPC %s to node-%d cancelled", rpcType, p.id)
 		return None[ResponseType](), errors.New("RPC cancelled")
 	}
 }
 
-func callRPCNoRetry[ResponseType any](p *Peer, rpc string, args any, ctx context.Context) (Optional[ResponseType], error) {
+func callRPCNoRetry[ResponseType any](p *Peer, rpcType string, args any, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
 	if p.client == nil && p.Connect() != nil {
-		return None[ResponseType](), errors.New("Could not connect")
+		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
-	call := p.client.Go(rpc, args, &reply, nil)
+	call := p.client.Go(rpcType, args, &reply, nil)
 	select {
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
+			if resp.Error == rpc.ErrShutdown {
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
+				p.client = nil
+			}
 			return None[ResponseType](), resp.Error
 		}
 		return Some[ResponseType](reply), nil
@@ -248,10 +299,10 @@ func callRPCNoRetry[ResponseType any](p *Peer, rpc string, args any, ctx context
 }
 
 // Calls RPC on all peers in parallel. It will ignore all errors and send any replies through CHANNEL. Nonblocking.
-func callPeers[ResponseType any](node *Node, rpc string, args any, timeout int, ctx context.Context, channel chan<- ResponseType) {
+func callPeers[ResponseType any](node *Node, rpcType string, args any, timeout int, ctx context.Context, channel chan<- ResponseType) {
 	for _, peer := range node.peers {
 		go func(peer *Peer) {
-			reply, err := callRPC[ResponseType](peer, rpc, args, timeout, ctx)
+			reply, err := callRPC[ResponseType](peer, rpcType, args, timeout, ctx)
 			if err == nil && reply.HasValue() {
 				channel <- reply.Value()
 			}

@@ -3,15 +3,18 @@ package raft
 import (
 	"context"
 	"cs244b-team/dns-raft/common"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 	wal "github.com/tidwall/wal"
 )
 
-type NodeStatus uint32
+type NodeStatus uint8
 
 const (
 	Follower NodeStatus = iota // default
@@ -40,10 +43,11 @@ type Node struct {
 	matchIndex map[int]int // For each server, index of highest log entry known to be replicated on server
 
 	// Server and cluster state
-	serverId int       // the id of this server
-	leaderId int       // the id of the leader, or -1 if unknown
-	cluster  []Address // List of all node addresses in the cluster
-	peers    []*Peer   // Peer information and RPC clients
+	serverId int               // the id of this server
+	leaderId int               // the id of the leader, or -1 if unknown
+	cluster  []Address         // List of all node addresses in the cluster
+	peers    []*Peer           // Peer information and RPC clients
+	updates  map[int]chan bool // TODO
 
 	// For followers to know that they are receiving RPCs from other nodes
 	lastContact time.Time
@@ -51,7 +55,20 @@ type Node struct {
 	// Configuration for timeouts and heartbeats
 	config Config
 
-	kv_store map[string]any
+	// DNS record store
+	kv_store map[string][]dns.RR
+}
+
+func (node *Node) ResetWAL() {
+	logEntryFilename := fmt.Sprintf("/tmp/raft-node-%d.logents", node.serverId)
+	if err := os.Remove(logEntryFilename); err != nil {
+		log.Fatalf("failed to remove wal storage file: %s", err)
+	}
+	walLog, err := wal.Open(logEntryFilename, nil)
+	if err != nil {
+		log.Fatalf("failed to re-open wal storage file when resetting: %s", err)
+	}
+	node.logEntryWAL = walLog
 }
 
 func NewNode(serverId int, cluster []Address, config Config) *Node {
@@ -68,6 +85,9 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r.logEntryWAL = walLog
 
 	r.log = make([]LogEntry, 0)
+
+	r.updates = make(map[int]chan bool)
+	r.kv_store = make(map[string][]dns.RR)
 
 	// Load saved log entries
 	firstSavedIndex, err := r.logEntryWAL.FirstIndex()
@@ -121,13 +141,40 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	return r
 }
 
+func (node *Node) getLeaderPeer() *Peer {
+	for _, peer := range node.peers {
+		if peer.id == node.leaderId {
+			return peer
+		}
+	}
+	return nil
+}
+
 func (node *Node) ConnectToCluster() {
+	var retryPeers []*Peer
 	for _, peer := range node.peers {
 		err := peer.Connect()
 		if err != nil {
-			log.Fatalf("node-%d failed to connect to node-%d, reason: %s", node.serverId, peer.id, err)
+			log.Warnf("node-%d failed to connect to node-%d, reason: %s", node.serverId, peer.id, err)
+			retryPeers = append(retryPeers, peer)
 		} else {
 			log.Debugf("node-%d connected to node-%d", node.serverId, peer.id)
+		}
+	}
+
+	for _, peer := range retryPeers {
+		failedCounter := 0
+		err := peer.Connect()
+		for err != nil && failedCounter < 10 {
+			log.Warnf("node-%d failed to connect on RETRY to node-%d, reason: %s", node.serverId, peer.id, err)
+			failedCounter++
+			time.Sleep(1 * time.Second)
+			err = peer.Connect()
+		}
+		if err != nil {
+			log.Debugf("node-%d connected to node-%d", node.serverId, peer.id)
+		} else if failedCounter >= 10 {
+			log.Warnf("node-%d failed to connect to node-%d after 10 RETRIES, reason: %s", node.serverId, peer.id, err)
 		}
 	}
 }
@@ -197,6 +244,84 @@ func (node *Node) setLastContact(lastContact time.Time) {
 	node.lastContact = lastContact
 }
 
+func (node *Node) GetValue(key string) ([]dns.RR, bool) {
+	records, ok := node.kv_store[key]
+	if !ok {
+		return nil, false
+	}
+	return records, true
+}
+
+func (node *Node) setValue(key string, record dns.RR) {
+	_, ok := node.kv_store[key]
+	if !ok {
+		node.kv_store[key] = make([]dns.RR, 0)
+	}
+
+	// Quick and dirty way to not duplicate record in store
+	for _, storeRecord := range node.kv_store[key] {
+		if dns.IsDuplicate(record, storeRecord) {
+			log.Warnf("node-%d ingoring duplicate record %s", node.serverId, record.String())
+			return
+		}
+	}
+
+	node.kv_store[key] = append(node.kv_store[key], record)
+}
+
+func (node *Node) removeValue(key string) {
+	delete(node.kv_store, key)
+}
+
+func (node *Node) UpdateValue(key string, cmdType CommandType, value Optional[dns.RR]) error {
+	node.mu.Lock()
+	if node.getStatus() == Leader {
+		entry := LogEntry{node.getCurrentTerm(), Command{cmdType, key, value}}
+		index := len(node.log) + 1
+		log.Debugf("Appending entry %v to node %d with update channel for 1-index %d", entry, node.serverId, index)
+		err := node.persistLogEntry(entry, uint64(index), false)
+		if err != nil {
+			node.mu.Unlock()
+			return err
+		}
+		node.log = append(node.log, entry)
+
+		updateChannel := make(chan bool, 1)
+		node.updates[index] = updateChannel
+
+		ctx := context.WithoutCancel(context.Background())
+		node.sendAppendEntries(ctx)
+
+		node.mu.Unlock()
+
+		// Wait for updateTimeout amount of time,
+		updateTimer := time.After(time.Duration(node.config.UpdateTimeout) * time.Millisecond)
+		select {
+		case <-updateTimer:
+			return errors.New(fmt.Sprintf("Log entry %d update timeout", index))
+		case <-updateChannel:
+			return nil
+		}
+	} else if node.getStatus() == Follower {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		leaderPeer := node.getLeaderPeer()
+		if leaderPeer == nil {
+			node.mu.Unlock()
+			return errors.New(fmt.Sprintf("No leader found for update request for key %s, value %v (sent to node with status %v)", key, value, node.getStatus()))
+		}
+
+		args := ForwardToLeaderArgs{Key: key, CmdType: cmdType, Value: value}
+		node.mu.Unlock()
+		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "Node.ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
+		return err
+	} else {
+		node.mu.Unlock()
+		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent to non-follower, non-leader node (with status %v)", key, value, node.getStatus()))
+	}
+}
+
 // Determine if a candidate's log is at least as up-to-date as the receiver's log
 func (node *Node) isCandidateUpToDate(lastLogTerm int, lastLogIndex int) bool {
 	idx, term := node.lastLogIndexAndTerm()
@@ -214,7 +339,10 @@ func (node *Node) lastLogIndexAndTerm() (int, int) {
 }
 
 func (node *Node) prevLogIndexAndTerm(peerId int) (int, int) {
-	nextIndex := node.nextIndex[peerId]
+	nextIndex, ok := node.nextIndex[peerId]
+	if !ok {
+		log.Fatalf("node-%d attempted to retrieve prevLogIndexAndTerm with a peerId %d that wasn't set", node.serverId, peerId)
+	}
 	if nextIndex == 0 {
 		return -1, -1
 	}
@@ -370,14 +498,19 @@ func (node *Node) runLeader() {
 	)
 	// Initialize nextIndex
 	node.mu.Lock()
-	for peerId := range node.nextIndex {
-		node.nextIndex[peerId] = len(node.log)
+
+	for _, peer := range node.peers {
+		node.nextIndex[peer.id] = len(node.log)
+		log.Debugf("node-%d setting peer-%d nextIndex to %d", node.serverId, peer.id, len(node.log))
 	}
 	node.mu.Unlock()
+
+	// Blank entry on leader startup
+	node.UpdateValue("", Blank, None[dns.RR]())
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
 	defer cancel()
-	logIndicesToVotes := make(IndexVoteCounter)
 	for {
 		node.mu.Lock()
 		if node.getStatus() != Leader {
@@ -385,32 +518,61 @@ func (node *Node) runLeader() {
 			return
 		}
 
-		node.sendAppendEntries(ctx, logIndicesToVotes)
+		node.sendAppendEntries(ctx)
 		node.mu.Unlock()
 		<-heartbeatTicker.C
 	}
-	// TODO
+	// TODO No-op commit (client interaction, section 8 of paper)
 }
 
-func (node *Node) persistentEntryToLog(entry LogEntry, logIndex uint64, truncateBack bool) error {
+func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack bool) error {
+	if logIndex <= 0 {
+		log.Fatalf("node-%d tried to write to an invalid index (%d) in our 1-indexed persistent log", node.serverId, logIndex)
+	}
+
 	bytes, err := common.EncodeToBytes(entry)
 	if err != nil {
 		return err
 	}
+
+	lastSavedIndex, err := node.logEntryWAL.LastIndex()
+	if err != nil {
+		return fmt.Errorf("node-%d failed to get wal last index: %s", node.serverId, err)
+	}
+
+	// If log is non-empty, we may need to truncate
 	if truncateBack {
-		if err = node.logEntryWAL.TruncateBack(logIndex); err != nil {
-			return err
+		// We only need to truncate the log if logIndex is within the current log
+		if logIndex <= lastSavedIndex {
+			if logIndex > 1 {
+				if err = node.logEntryWAL.TruncateBack(logIndex - 1); err != nil {
+					return fmt.Errorf("node-%d logEntryWAL.TruncateBack failed with logIndex: %d", node.serverId, logIndex)
+				}
+			} else {
+				// We want to insert into logIndex 1, so we must clear the entire log
+				node.ResetWAL()
+			}
 		}
+	} else if logIndex <= lastSavedIndex {
+		log.Fatalf("node-%d logEntryWAL received a request to write w/o truncateBack to logIndex %d when the log has been persisted until %d", node.serverId, logIndex, lastSavedIndex)
 	}
+
+	// By now, we have truncated the log, as needed. We should append the log entry now.
+	if logIndex > lastSavedIndex+1 {
+		// We want to write past the lastSavedIndex, which leaves a hole in our log
+		return fmt.Errorf("node-%d attempted to persist log with a hole at index %d when log goes to index %d", node.serverId, logIndex, lastSavedIndex)
+	}
+
 	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
-		return err
+		return fmt.Errorf("node-%d logEntryWAL.Write failed with logIndex: %d with err %v", node.serverId, logIndex, err)
 	}
+
 	return nil
 }
 
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
-func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes IndexVoteCounter) {
+func (node *Node) sendAppendEntries(ctx context.Context) {
 	if node.getStatus() != Leader {
 		return
 	}
@@ -437,13 +599,16 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 			node.mu.Unlock()
 			reply, err := callRPCNoRetry[AppendEntriesResponse](p, "Node.AppendEntries", args, ctx)
 			if err != nil {
-				log.Errorf("node-%d experienced AppendEntries error: %s", node.serverId, err)
+				log.Errorf("node-%d experienced AppendEntries error: %s", p.id, err)
 				return
 			}
 			unpackedReply := reply.Value()
 			node.mu.Lock()
 			defer node.mu.Unlock()
 			if unpackedReply.CurrentTerm > node.getCurrentTerm() {
+				if unpackedReply.Success {
+					log.Fatal("Expected a node of higher term to reject the appendentry")
+				}
 				log.Debugf(
 					"node-%d received AppendEntries response with higher term %d, converting to follower",
 					node.serverId,
@@ -452,31 +617,66 @@ func (node *Node) sendAppendEntries(ctx context.Context, logIndicesToVotes Index
 				node.convertToFollower(unpackedReply.CurrentTerm)
 				return
 			}
-			// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
-			// does not seem to be the right spot to do so.
+
 			if !unpackedReply.Success {
-				node.nextIndex[p.id] -= 1
+				node.nextIndex[p.id] = nextIdx - 1
 			} else if nextIdx < len(node.log) {
 				// We can consider the nextIndex to have been accepted by the peer
-				logIndicesToVotes.AddVote(nextIdx, unpackedReply.ServerId)
-				if logIndicesToVotes.CountVotes(nextIdx) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() {
-					commitIdx := min(node.commitIndex, nextIdx)
-					node.setCommitIndex(commitIdx)
+				node.matchIndex[p.id] = nextIdx
+				// The leader always has a log match for nextIdx
+				if (node.countLogMatches(nextIdx)+1) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() && nextIdx > node.commitIndex {
+					node.setCommitIndex(nextIdx)
 					node.applyLogCommands()
 				}
-				node.nextIndex[p.id] += 1
+				node.nextIndex[p.id] = nextIdx + 1
 			}
 		}(peer)
 	}
 }
 
-func applyCommand(entry LogEntry) {
-	// TODO: apply command string to update kv_store
+func (node *Node) countLogMatches(logIndex int) int {
+	// Make sure the lock has been acquired before calling!
+	numMatches := 0
+	for _, peer := range node.peers {
+		if node.matchIndex[peer.id] >= logIndex {
+			numMatches++
+		}
+	}
+	return numMatches
 }
 
+func (node *Node) applyCommand(entry LogEntry) {
+	if entry.Cmd.Type == Remove {
+		node.removeValue(entry.Cmd.Key)
+	} else if entry.Cmd.Type == Update {
+		if !entry.Cmd.Value.HasValue() {
+			log.Warnf("node-%d update for %s expected value to be set, but none was found", node.serverId, entry.Cmd.Key)
+		}
+		node.setValue(entry.Cmd.Key, entry.Cmd.Value.Value())
+	} else if entry.Cmd.Type == Blank {
+		log.Debugf("node-%d skipping blank log entry", node.serverId)
+	} else {
+		log.Fatalf("node-%d attempted to apply an usupported Raft command: %v", node.serverId, entry.Cmd.Type)
+	}
+}
+
+// Lock is held by sendAppendEntries or AppendEntries RPC, so no lock is needed here
 func (node *Node) applyLogCommands() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
-		applyCommand(node.log[idx])
+		// log.Infof("node-%d applying command at log index: %v", node.serverId, idx, node.log[idx])
+		node.applyCommand(node.log[idx])
+
+		// If this leader node has any clients blocked waiting for their update to be committed, signal them
+		if node.getStatus() == Leader {
+			updateChannel, ok := node.updates[idx+1]
+			if !ok {
+				log.Debugf("node-%d (leader) attempted to apply log command, but client update channel is missing at index: %d", node.serverId, idx+1)
+			} else {
+				updateChannel <- true
+				close(updateChannel)
+			}
+			// TODO: remove update logindex: channel mapping
+		}
 	}
 	node.lastApplied = node.commitIndex
 }
@@ -493,10 +693,12 @@ func (node *Node) convertToFollower(term int) {
 
 func (node *Node) convertToCandidate() {
 	log.Infof("node-%d converting to candidate", node.serverId)
+	node.setLeaderId(-1) // Reset the leaderId since we are in an election
 	node.setStatus(Candidate)
 }
 
 func (node *Node) convertToLeader() {
 	log.Infof("node-%d converting to leader", node.serverId)
+	node.setLeaderId(node.serverId) // Record that we are the leader
 	node.setStatus(Leader)
 }
