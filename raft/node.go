@@ -261,7 +261,7 @@ func (node *Node) setValue(key string, record dns.RR) {
 	// Quick and dirty way to not duplicate record in store
 	for _, storeRecord := range node.kv_store[key] {
 		if dns.IsDuplicate(record, storeRecord) {
-			// log.Warnf("node-%d ingoring duplicate record %s", node.serverId, record.String())
+			log.Warnf("node-%d ingoring duplicate record %s", node.serverId, record.String())
 			return
 		}
 	}
@@ -339,7 +339,10 @@ func (node *Node) lastLogIndexAndTerm() (int, int) {
 }
 
 func (node *Node) prevLogIndexAndTerm(peerId int) (int, int) {
-	nextIndex := node.nextIndex[peerId]
+	nextIndex, ok := node.nextIndex[peerId]
+	if !ok {
+		log.Fatalf("node-%d attempted to retrieve prevLogIndexAndTerm with a peerId %d that wasn't set", node.serverId, peerId)
+	}
 	if nextIndex == 0 {
 		return -1, -1
 	}
@@ -495,8 +498,10 @@ func (node *Node) runLeader() {
 	)
 	// Initialize nextIndex
 	node.mu.Lock()
-	for peerId := range node.nextIndex {
-		node.nextIndex[peerId] = len(node.log)
+
+	for _, peer := range node.peers {
+		node.nextIndex[peer.id] = len(node.log)
+		log.Debugf("node-%d setting peer-%d nextIndex to %d", node.serverId, peer.id, len(node.log))
 	}
 	node.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
