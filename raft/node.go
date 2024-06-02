@@ -504,6 +504,10 @@ func (node *Node) runLeader() {
 		log.Debugf("node-%d setting peer-%d nextIndex to %d", node.serverId, peer.id, len(node.log))
 	}
 	node.mu.Unlock()
+
+	// Blank entry on leader startup
+	node.UpdateValue("", Blank, None[dns.RR]())
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
 	defer cancel()
@@ -646,11 +650,13 @@ func (node *Node) applyCommand(entry LogEntry) {
 		node.removeValue(entry.Cmd.Key)
 	} else if entry.Cmd.Type == Update {
 		if !entry.Cmd.Value.HasValue() {
-			log.Warnf("Update for %s expected value to be set, but none was found", entry.Cmd.Key)
+			log.Warnf("node-%d update for %s expected value to be set, but none was found", node.serverId, entry.Cmd.Key)
 		}
 		node.setValue(entry.Cmd.Key, entry.Cmd.Value.Value())
+	} else if entry.Cmd.Type == Blank {
+		log.Debugf("node-%d skipping blank log entry", node.serverId)
 	} else {
-		log.Fatalf("Unsupported Raft command: %v", entry.Cmd.Type)
+		log.Fatalf("node-%d attempted to apply an usupported Raft command: %v", node.serverId, entry.Cmd.Type)
 	}
 }
 

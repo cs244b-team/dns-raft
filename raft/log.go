@@ -7,6 +7,7 @@ type CommandType uint8
 const (
 	Update CommandType = iota
 	Remove
+	Blank
 )
 
 type Command struct {
