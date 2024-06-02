@@ -5,11 +5,11 @@ import (
 	"cs244b-team/dns-raft/common"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 	wal "github.com/tidwall/wal"
 )
@@ -56,7 +56,7 @@ type Node struct {
 	config Config
 
 	// DNS record store
-	kv_store map[string]net.IP
+	kv_store map[string]dns.RR
 }
 
 func (node *Node) ResetWAL() {
@@ -87,7 +87,7 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r.log = make([]LogEntry, 0)
 
 	r.updates = make(map[int]chan bool)
-	r.kv_store = make(map[string]net.IP)
+	r.kv_store = make(map[string]dns.RR)
 
 	// Load saved log entries
 	firstSavedIndex, err := r.logEntryWAL.FirstIndex()
@@ -244,7 +244,7 @@ func (node *Node) setLastContact(lastContact time.Time) {
 	node.lastContact = lastContact
 }
 
-func (node *Node) GetValue(key string) (net.IP, bool) {
+func (node *Node) GetValue(key string) (dns.RR, bool) {
 	value, ok := node.kv_store[key]
 	if !ok {
 		return nil, false
@@ -252,13 +252,22 @@ func (node *Node) GetValue(key string) (net.IP, bool) {
 	return value, true
 }
 
-func (node *Node) UpdateValue(key string, value net.IP) error {
+func (node *Node) setValue(key string, record dns.RR) {
+	node.kv_store[key] = record
+}
+
+func (node *Node) removeValue(key string) {
+	delete(node.kv_store, key)
+}
+
+func (node *Node) UpdateValue(key string, cmdType CommandType, value Optional[dns.RR]) error {
 	node.mu.Lock()
 	if node.getStatus() == Leader {
-		entry := LogEntry{node.getCurrentTerm(), Command{Update, key, Some(value)}}
+		entry := LogEntry{node.getCurrentTerm(), Command{cmdType, key, value}}
 		node.log = append(node.log, entry)
 		index := len(node.log)
 		node.persistLogEntry(entry, uint64(index), false)
+		// TODO: error check?
 
 		updateChannel := make(chan bool, 1)
 		node.updates[index] = updateChannel
@@ -283,21 +292,17 @@ func (node *Node) UpdateValue(key string, value net.IP) error {
 		leaderPeer := node.getLeaderPeer()
 		if leaderPeer == nil {
 			node.mu.Unlock()
-			return errors.New(fmt.Sprintf("No leader found for update request for key %s, value %v was sent to node with status %v", key, value, node.getStatus()))
+			return errors.New(fmt.Sprintf("No leader found for update request for key %s, value %v (sent to node with status %v)", key, value, node.getStatus()))
 		}
 
-		args := ForwardToLeaderArgs{Key: key, Value: value}
+		args := ForwardToLeaderArgs{Key: key, CmdType: cmdType, Value: value}
 		node.mu.Unlock()
 		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "Node.ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
 		return err
 	} else {
 		node.mu.Unlock()
-		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent to non-follower, non-leader node with status %v", key, value, node.getStatus()))
+		return errors.New(fmt.Sprintf("Update request for key %s, value %v was sent to non-follower, non-leader node (with status %v)", key, value, node.getStatus()))
 	}
-}
-
-func (node *Node) setValue(key string, value net.IP) {
-	node.kv_store[key] = value
 }
 
 // Determine if a candidate's log is at least as up-to-date as the receiver's log
@@ -538,7 +543,7 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
 		return fmt.Errorf("node-%d logEntryWAL.Write failed with logIndex: %d with err %v", node.serverId, logIndex, err)
 	}
-	
+
 	return nil
 }
 
@@ -626,7 +631,7 @@ func (node *Node) countLogMatches(logIndex int) int {
 
 func (node *Node) applyCommand(entry LogEntry) {
 	if entry.Cmd.Type == Remove {
-		delete(node.kv_store, entry.Cmd.Key)
+		node.removeValue(entry.Cmd.Key)
 	} else if entry.Cmd.Type == Update {
 		if !entry.Cmd.Value.HasValue() {
 			log.Warnf("Update for %s expected value to be set, but none was found", entry.Cmd.Key)

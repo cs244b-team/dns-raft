@@ -81,6 +81,7 @@ func monitorIpEval(updateChannel chan netip.Addr) {
 		ip := rand.Uint32()
 		bytes := [4]byte{byte(ip >> 24), byte(ip >> 16), byte(ip >> 8), byte(ip)}
 		updateChannel <- netip.AddrFrom4(bytes)
+		// TODO: add 16-byte IPs
 	}
 }
 

@@ -1,6 +1,6 @@
 package raft
 
-import "net"
+import "github.com/miekg/dns"
 
 type CommandType uint8
 
@@ -12,7 +12,7 @@ const (
 type Command struct {
 	Type  CommandType
 	Key   string
-	Value Optional[net.IP]
+	Value Optional[dns.RR]
 }
 
 type LogEntry struct {

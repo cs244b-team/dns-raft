@@ -9,6 +9,8 @@ import (
 	"net/rpc"
 	"time"
 
+	"github.com/miekg/dns"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -97,13 +99,14 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteResponse) 
 }
 
 type ForwardToLeaderArgs struct {
-	Key   string
-	Value net.IP
+	Key     string
+	CmdType CommandType
+	Value   Optional[dns.RR]
 }
 
 type ForwardToLeaderResponse struct {
 	Key     string
-	Value   net.IP
+	Value   Optional[dns.RR]
 	Success bool
 }
 
@@ -115,7 +118,7 @@ func (node *Node) ForwardToLeader(args ForwardToLeaderArgs, reply *ForwardToLead
 
 	if node.getStatus() == Leader {
 		node.mu.Unlock()
-		err := node.UpdateValue(args.Key, args.Value)
+		err := node.UpdateValue(args.Key, args.CmdType, args.Value)
 		if err != nil {
 			log.Error("node-%d UpdateValue failed: %v", node.serverId, err)
 		}

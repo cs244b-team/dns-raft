@@ -96,15 +96,42 @@ func connect(server string, serverPort string) (dns.Client, *dns.Conn) {
 func (c *DDNSClient) createUpdateRecord(addr netip.Addr) *dns.Msg {
 	m := new(dns.Msg)
 	m.SetUpdate(c.zone)
-	m.Insert([]dns.RR{
-		&dns.A{
-			Hdr: dns.RR_Header{
-				Name:   c.domain,
-				Rrtype: dns.TypeA,
-				Class:  dns.ClassINET,
-				Ttl:    ResourceRecordTTL,
+	if addr.Is6() {
+		m.Insert([]dns.RR{
+			&dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   c.domain,
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    ResourceRecordTTL,
+				},
+				AAAA: addr.AsSlice(),
 			},
-			A: addr.AsSlice(),
+		})
+	} else {
+		m.Insert([]dns.RR{
+			&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   c.domain,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    ResourceRecordTTL,
+				},
+				A: addr.AsSlice(),
+			},
+		})
+	}
+	return m
+}
+
+func (c *DDNSClient) createRemoveRecord() *dns.Msg {
+	m := new(dns.Msg)
+	m.SetUpdate(c.zone)
+	m.Remove([]dns.RR{
+		&dns.ANY{
+			Hdr: dns.RR_Header{
+				Name: c.domain,
+			},
 		},
 	})
 	return m
@@ -161,21 +188,16 @@ func (s *DDNSServer) handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m.SetReply(r)
 
 	for _, question := range r.Question {
-		ip, ok := s.raftNode.GetValue(question.Name)
+		record, ok := s.raftNode.GetValue(question.Name)
 		if !ok {
-			log.Warnf("`A` record not found for %s", question.Name)
+			log.Warnf("Record not found for %s", question.Name)
 			m.Rcode = dns.RcodeNameError
 		} else {
-			answer := &dns.A{
-				Hdr: dns.RR_Header{
-					Name:   question.Name,
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    60,
-				},
-				A: ip,
+			if record.Header().Rrtype == dns.TypeA || record.Header().Rrtype == dns.TypeAAAA {
+				m.Answer = append(m.Answer, record)
+			} else if record.Header().Rrtype == dns.TypeNS {
+				m.Ns = append(m.Ns, record)
 			}
-			m.Answer = append(m.Answer, answer)
 		}
 	}
 
@@ -190,7 +212,12 @@ func (s *DDNSServer) handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {
 		m.Rcode = dns.RcodeFormatError
 	} else {
 		// TODO get update type
-		err := s.raftNode.UpdateValue(r.Ns[0].Header().Name, r.Ns[0].(*dns.A).A)
+		var err error
+		if r.Ns[0].Header().Class == dns.ClassANY {
+			err = s.raftNode.UpdateValue(r.Ns[0].Header().Name, raft.Remove, raft.None[dns.RR]())
+		} else {
+			err = s.raftNode.UpdateValue(r.Ns[0].Header().Name, raft.Update, raft.Some(r.Ns[0]))
+		}
 		if err != nil {
 			m.Rcode = dns.RcodeServerFailure
 			log.Errorf("Failed to update: %v", err)
