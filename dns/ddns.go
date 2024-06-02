@@ -4,6 +4,7 @@ import (
 	"cs244b-team/dns-raft/raft"
 	"fmt"
 	"net/netip"
+	"sort"
 	"time"
 
 	"github.com/miekg/dns"
@@ -188,16 +189,21 @@ func (s *DDNSServer) handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m.SetReply(r)
 
 	for _, question := range r.Question {
-		record, ok := s.raftNode.GetValue(question.Name)
+		records, ok := s.raftNode.GetValue(question.Name)
 		if !ok {
 			log.Warnf("Record not found for %s", question.Name)
 			m.Rcode = dns.RcodeNameError
 		} else {
-			if record.Header().Rrtype == dns.TypeA || record.Header().Rrtype == dns.TypeAAAA {
-				m.Answer = append(m.Answer, record)
-			} else if record.Header().Rrtype == dns.TypeNS {
-				m.Ns = append(m.Ns, record)
+			for _, record := range records {
+				if question.Qtype == record.Header().Rrtype || question.Qtype == dns.TypeANY {
+					m.Answer = append(m.Answer, record)
+				}
 			}
+
+			// Keep response tidy, regardless of record insertion order
+			sort.Slice(m.Answer, func(i, j int) bool {
+				return m.Answer[i].Header().Rrtype < m.Answer[j].Header().Rrtype
+			})
 		}
 	}
 
@@ -211,21 +217,20 @@ func (s *DDNSServer) handleUpdateRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if len(r.Ns) == 0 {
 		m.Rcode = dns.RcodeFormatError
 	} else {
-		// TODO get update type
-		var err error
-		if r.Ns[0].Header().Class == dns.ClassANY {
-			err = s.raftNode.UpdateValue(r.Ns[0].Header().Name, raft.Remove, raft.None[dns.RR]())
-		} else {
-			err = s.raftNode.UpdateValue(r.Ns[0].Header().Name, raft.Update, raft.Some(r.Ns[0]))
-		}
-		if err != nil {
-			m.Rcode = dns.RcodeServerFailure
-			log.Errorf("Failed to update: %v", err)
+		for _, record := range r.Ns {
+			var err error
+			if record.Header().Class == dns.ClassANY {
+				// Delete all RRs from a name
+				err = s.raftNode.UpdateValue(record.Header().Name, raft.Remove, raft.None[dns.RR]())
+			} else {
+				err = s.raftNode.UpdateValue(record.Header().Name, raft.Update, raft.Some(record))
+			}
+			if err != nil {
+				m.Rcode = dns.RcodeServerFailure
+				log.Errorf("Failed to update: %v", err)
+			}
 		}
 	}
-
-	// println("Received update request:")
-	// println(m.String())
 
 	w.WriteMsg(m)
 }

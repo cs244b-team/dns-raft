@@ -56,7 +56,7 @@ type Node struct {
 	config Config
 
 	// DNS record store
-	kv_store map[string]dns.RR
+	kv_store map[string][]dns.RR
 }
 
 func (node *Node) ResetWAL() {
@@ -87,7 +87,7 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 	r.log = make([]LogEntry, 0)
 
 	r.updates = make(map[int]chan bool)
-	r.kv_store = make(map[string]dns.RR)
+	r.kv_store = make(map[string][]dns.RR)
 
 	// Load saved log entries
 	firstSavedIndex, err := r.logEntryWAL.FirstIndex()
@@ -244,16 +244,29 @@ func (node *Node) setLastContact(lastContact time.Time) {
 	node.lastContact = lastContact
 }
 
-func (node *Node) GetValue(key string) (dns.RR, bool) {
-	value, ok := node.kv_store[key]
+func (node *Node) GetValue(key string) ([]dns.RR, bool) {
+	records, ok := node.kv_store[key]
 	if !ok {
 		return nil, false
 	}
-	return value, true
+	return records, true
 }
 
 func (node *Node) setValue(key string, record dns.RR) {
-	node.kv_store[key] = record
+	_, ok := node.kv_store[key]
+	if !ok {
+		node.kv_store[key] = make([]dns.RR, 0)
+	}
+
+	// Quick and dirty way to not duplicate record in store
+	for _, storeRecord := range node.kv_store[key] {
+		if dns.IsDuplicate(record, storeRecord) {
+			log.Debugf("node-%d ingoring duplicate record %s", node.serverId, record.String())
+			return
+		}
+	}
+
+	node.kv_store[key] = append(node.kv_store[key], record)
 }
 
 func (node *Node) removeValue(key string) {
@@ -645,7 +658,7 @@ func (node *Node) applyCommand(entry LogEntry) {
 // Lock is held by sendAppendEntries or AppendEntries RPC, so no lock is needed here
 func (node *Node) applyLogCommands() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
-		log.Debugf("node-%d applying command at log index: %d", node.serverId, idx)
+		log.Infof("node-%d applying command at log index: %v, ", node.serverId, idx, node.log[idx])
 		node.applyCommand(node.log[idx])
 
 		// If this leader node has any clients blocked waiting for their update to be committed, signal them

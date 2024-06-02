@@ -19,7 +19,3 @@ type LogEntry struct {
 	Term int
 	Cmd  Command
 }
-
-// Each entry contains command for state machine, and term when entry was received by leader (first index is 0!)
-type StableLog struct {
-}

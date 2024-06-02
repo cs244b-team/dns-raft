@@ -78,6 +78,8 @@ func main() {
 	gob.Register(&dnslib.A{})
 	gob.Register(&dnslib.AAAA{})
 	gob.Register(&dnslib.NS{})
+	gob.Register(&dnslib.CNAME{})
+	gob.Register(&dnslib.TXT{})
 
 	raftCluster := cluster{}
 	flag.Var(&raftCluster, "node", "ip:port of other nodes in the cluster")
