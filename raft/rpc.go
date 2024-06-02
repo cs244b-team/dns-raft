@@ -212,7 +212,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 
 	// 4. Append any new entries not already in the log and persist them to storage
 	prevNumEntries := len(node.log)
-	node.log = append(node.log, args.Entries...)
+	node.log = append(node.log[:startInsertingAtIdx], args.Entries...)
 	for i, entry := range args.Entries {
 		// WAL log entries are 1-indexed
 		persistErr := node.persistLogEntry(entry, uint64(prevNumEntries+i+1), i == 0)

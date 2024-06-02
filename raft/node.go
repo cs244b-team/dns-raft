@@ -261,7 +261,7 @@ func (node *Node) setValue(key string, record dns.RR) {
 	// Quick and dirty way to not duplicate record in store
 	for _, storeRecord := range node.kv_store[key] {
 		if dns.IsDuplicate(record, storeRecord) {
-			log.Debugf("node-%d ingoring duplicate record %s", node.serverId, record.String())
+			// log.Warnf("node-%d ingoring duplicate record %s", node.serverId, record.String())
 			return
 		}
 	}
@@ -658,7 +658,7 @@ func (node *Node) applyCommand(entry LogEntry) {
 // Lock is held by sendAppendEntries or AppendEntries RPC, so no lock is needed here
 func (node *Node) applyLogCommands() {
 	for idx := node.lastApplied + 1; idx <= node.commitIndex; idx++ {
-		log.Infof("node-%d applying command at log index: %v, ", node.serverId, idx, node.log[idx])
+		// log.Infof("node-%d applying command at log index: %v", node.serverId, idx, node.log[idx])
 		node.applyCommand(node.log[idx])
 
 		// If this leader node has any clients blocked waiting for their update to be committed, signal them
