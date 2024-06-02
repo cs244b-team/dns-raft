@@ -4,10 +4,12 @@ import (
 	"cs244b-team/dns-raft/common"
 	"cs244b-team/dns-raft/dns"
 	"cs244b-team/dns-raft/raft"
+	"encoding/gob"
 	"flag"
 	"fmt"
 	"sync"
 
+	dnslib "github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -73,6 +75,9 @@ func (n *cluster) Set(address string) error {
 
 func main() {
 	common.InitLogger()
+	gob.Register(&dnslib.A{})
+	gob.Register(&dnslib.AAAA{})
+	gob.Register(&dnslib.NS{})
 
 	raftCluster := cluster{}
 	flag.Var(&raftCluster, "node", "ip:port of other nodes in the cluster")
@@ -87,6 +92,6 @@ func main() {
 
 	raftConfig := raft.DefaultConfig()
 	server := dns.NewDDNSServer(*dnsListenPort, *raftNodeId, raftCluster, raftConfig)
-	
+
 	server.Run()
 }
