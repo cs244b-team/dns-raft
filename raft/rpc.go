@@ -159,7 +159,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	// RPC from current leader or granting vote to candidate:
 	// convert to candidate
 
-	// TODO (1) ...
+	node.setLastContact(time.Now())
 
 	response := AppendEntriesResponse{CurrentTerm: node.getCurrentTerm(), Success: false, ServerId: node.serverId}
 
@@ -200,26 +200,36 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	// 3. If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it (Section 5.3)
 	startInsertingAtIdx := args.PrevLogIndex + 1
-	entriesTruncateIndex := 0
+	logTruncated := false
+	startEntriesAtIdx := 0
 	for i, entry := range args.Entries {
-		entriesTruncateIndex = i
-		if startInsertingAtIdx+i < len(node.log) && node.log[startInsertingAtIdx+i].Term != entry.Term {
-			node.log = node.log[:startInsertingAtIdx+i]
+		// index i of args.Entries will be inserted at index startInsertingAtIdx + i of the log
+		if startInsertingAtIdx+i >= len(node.log) {
+			// We've reached the end of the log, so we have no more conflicts
 			break
 		}
+		if node.log[startInsertingAtIdx+i].Term != entry.Term {
+			node.log = node.log[:startInsertingAtIdx+i]
+			startEntriesAtIdx = i // We start inserting from index i of args.Entries
+			logTruncated = true
+			break
+		} else {
+			startEntriesAtIdx = i + 1 // We start inserting from index i+1 of args.Entries
+		}
 	}
-	args.Entries = args.Entries[entriesTruncateIndex:] // the prior entries are already in the log
+	args.Entries = args.Entries[startEntriesAtIdx:] // the prior entries are already in the log
 
 	// 4. Append any new entries not already in the log and persist them to storage
 	prevNumEntries := len(node.log)
-	node.log = append(node.log[:startInsertingAtIdx], args.Entries...)
 	for i, entry := range args.Entries {
 		// WAL log entries are 1-indexed
-		persistErr := node.persistLogEntry(entry, uint64(prevNumEntries+i+1), i == 0)
+		persistErr := node.persistLogEntry(entry, uint64(prevNumEntries+i+1), logTruncated && i == 0)
 		if persistErr != nil {
 			*reply = response
 			return persistErr
 		}
+		// Only append to the log after it's been written to the WAL
+		node.log = append(node.log, entry)
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -229,9 +239,6 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 		node.setCommitIndex(commitIdx)
 		node.applyLogCommands()
 	}
-
-	// TODO: synch
-	node.setLastContact(time.Now())
 
 	response.Success = true
 	*reply = response

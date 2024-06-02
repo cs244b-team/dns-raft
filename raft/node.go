@@ -277,10 +277,14 @@ func (node *Node) UpdateValue(key string, cmdType CommandType, value Optional[dn
 	node.mu.Lock()
 	if node.getStatus() == Leader {
 		entry := LogEntry{node.getCurrentTerm(), Command{cmdType, key, value}}
+		index := len(node.log) + 1
+		log.Debugf("Appending entry %v to node %d with update channel for 1-index %d", entry, node.serverId, index)
+		err := node.persistLogEntry(entry, uint64(index), false)
+		if err != nil {
+			node.mu.Unlock()
+			return err
+		}
 		node.log = append(node.log, entry)
-		index := len(node.log)
-		node.persistLogEntry(entry, uint64(index), false)
-		// TODO: error check?
 
 		updateChannel := make(chan bool, 1)
 		node.updates[index] = updateChannel
@@ -396,8 +400,6 @@ func (node *Node) runCandidate() {
 		return
 	}
 
-	node.setLeaderId(-1) // Reset the leaderId since we are in an election
-
 	// Call RequestVote on peers
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -496,7 +498,6 @@ func (node *Node) runLeader() {
 	for peerId := range node.nextIndex {
 		node.nextIndex[peerId] = len(node.log)
 	}
-	node.setLeaderId(node.serverId) // Record that we are the leader
 	node.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer heartbeatTicker.Stop()
@@ -517,7 +518,7 @@ func (node *Node) runLeader() {
 
 func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack bool) error {
 	if logIndex <= 0 {
-		log.Fatalf("node-%d tried to write to an invalid index () in our 1-indexed persistent log", node.serverId, logIndex)
+		log.Fatalf("node-%d tried to write to an invalid index (%d) in our 1-indexed persistent log", node.serverId, logIndex)
 	}
 
 	bytes, err := common.EncodeToBytes(entry)
@@ -596,6 +597,9 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 			node.mu.Lock()
 			defer node.mu.Unlock()
 			if unpackedReply.CurrentTerm > node.getCurrentTerm() {
+				if unpackedReply.Success {
+					log.Fatal("Expected a node of higher term to reject the appendentry")
+				}
 				log.Debugf(
 					"node-%d received AppendEntries response with higher term %d, converting to follower",
 					node.serverId,
@@ -605,27 +609,17 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 				return
 			}
 
-			// If nextIdx is stale, we know that this AppendEntries request is outdated and may have already been serviced
-			// while the lock wasn't held during the RPC call.
-			idx, _ = node.prevLogIndexAndTerm(p.id)
-			if idx+1 > nextIdx {
-				return
-			}
-
-			// TODO: Was trying to implement the part where you retry append entries if logs are out of order. This
-			// does not seem to be the right spot to do so.
 			if !unpackedReply.Success {
-				node.nextIndex[p.id] -= 1
+				node.nextIndex[p.id] = nextIdx - 1
 			} else if nextIdx < len(node.log) {
 				// We can consider the nextIndex to have been accepted by the peer
 				node.matchIndex[p.id] = nextIdx
 				// The leader always has a log match for nextIdx
 				if (node.countLogMatches(nextIdx)+1) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() && nextIdx > node.commitIndex {
-					commitIdx := nextIdx
-					node.setCommitIndex(commitIdx)
+					node.setCommitIndex(nextIdx)
 					node.applyLogCommands()
 				}
-				node.nextIndex[p.id] += 1
+				node.nextIndex[p.id] = nextIdx + 1
 			}
 		}(peer)
 	}
@@ -688,10 +682,12 @@ func (node *Node) convertToFollower(term int) {
 
 func (node *Node) convertToCandidate() {
 	log.Infof("node-%d converting to candidate", node.serverId)
+	node.setLeaderId(-1) // Reset the leaderId since we are in an election
 	node.setStatus(Candidate)
 }
 
 func (node *Node) convertToLeader() {
 	log.Infof("node-%d converting to leader", node.serverId)
+	node.setLeaderId(node.serverId) // Record that we are the leader
 	node.setStatus(Leader)
 }
