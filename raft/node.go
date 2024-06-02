@@ -499,7 +499,7 @@ func (node *Node) runLeader() {
 
 func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack bool) error {
 	if logIndex <= 0 {
-		log.Fatalf("Tried to write to an invalid index in our 1-indexed persistent log")
+		log.Fatalf("node-%d tried to write to an invalid index () in our 1-indexed persistent log", node.serverId, logIndex)
 	}
 
 	bytes, err := common.EncodeToBytes(entry)
@@ -509,7 +509,7 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 
 	lastSavedIndex, err := node.logEntryWAL.LastIndex()
 	if err != nil {
-		return fmt.Errorf("failed to get wal last index: %s", err)
+		return fmt.Errorf("node-%d failed to get wal last index: %s", node.serverId, err)
 	}
 
 	// If log is non-empty, we may need to truncate
@@ -518,7 +518,7 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 		if logIndex <= lastSavedIndex {
 			if logIndex > 1 {
 				if err = node.logEntryWAL.TruncateBack(logIndex - 1); err != nil {
-					return fmt.Errorf("logEntryWAL.TruncateBack failed with logIndex: %d", logIndex)
+					return fmt.Errorf("node-%d logEntryWAL.TruncateBack failed with logIndex: %d", node.serverId, logIndex)
 				}
 			} else {
 				// We want to insert into logIndex 1, so we must clear the entire log
@@ -526,18 +526,19 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 			}
 		}
 	} else if logIndex <= lastSavedIndex {
-		log.Fatalf("logEntryWAL received a request to write w/o truncateBack to logIndex %d when the log has been persisted until %d", logIndex, lastSavedIndex)
+		log.Fatalf("node-%d logEntryWAL received a request to write w/o truncateBack to logIndex %d when the log has been persisted until %d", node.serverId, logIndex, lastSavedIndex)
 	}
 
 	// By now, we have truncated the log, as needed. We should append the log entry now.
 	if logIndex > lastSavedIndex+1 {
 		// We want to write past the lastSavedIndex, which leaves a hole in our log
-		return fmt.Errorf("attempted to persist log with a hole at index %d when log goes to index %d", logIndex, lastSavedIndex)
+		return fmt.Errorf("node-%d attempted to persist log with a hole at index %d when log goes to index %d", node.serverId, logIndex, lastSavedIndex)
 	}
 
 	if err = node.logEntryWAL.Write(logIndex, bytes); err != nil {
-		return fmt.Errorf("logEntryWAL.Write failed with logIndex: %d with err %v", logIndex, err)
+		return fmt.Errorf("node-%d logEntryWAL.Write failed with logIndex: %d with err %v", node.serverId, logIndex, err)
 	}
+	
 	return nil
 }
 
@@ -646,7 +647,7 @@ func (node *Node) applyLogCommands() {
 		if node.getStatus() == Leader {
 			updateChannel, ok := node.updates[idx+1]
 			if !ok {
-				log.Errorf("Leader attempted to apply log command, but client update channel is missing at index: %d", idx+1)
+				log.Debugf("node-%d (leader) attempted to apply log command, but client update channel is missing at index: %d", node.serverId, idx+1)
 			} else {
 				updateChannel <- true
 				close(updateChannel)

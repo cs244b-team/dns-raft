@@ -116,6 +116,9 @@ func (node *Node) ForwardToLeader(args ForwardToLeaderArgs, reply *ForwardToLead
 	if node.getStatus() == Leader {
 		node.mu.Unlock()
 		err := node.UpdateValue(args.Key, args.Value)
+		if err != nil {
+			log.Error("node-%d UpdateValue failed: %v", node.serverId, err)
+		}
 		response.Success = err != nil
 		*reply = response
 		return err
