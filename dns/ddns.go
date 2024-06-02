@@ -2,7 +2,6 @@ package dns
 
 import (
 	"cs244b-team/dns-raft/raft"
-	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -80,33 +79,6 @@ func (c *DDNSClient) sendUpdateOnce(record *dns.Msg) error {
 
 	if reply.Rcode != dns.RcodeSuccess {
 		return fmt.Errorf("received error response: %v", dns.RcodeToString[reply.Rcode])
-	}
-
-	// If there is an NS record we need to retry the update with this new server (updates go to the Raft leader)
-	if len(reply.Ns) > 0 {
-		server := reply.Ns[0].(*dns.NS).Ns
-
-		// Find the matching A record in the additional section
-		var addr string
-		for _, extra := range reply.Extra {
-			if extra.Header().Name == server {
-				addr = extra.(*dns.A).A.String()
-				break
-			}
-		}
-
-		if addr == "" {
-			return errors.New("no A record found for new server")
-		}
-
-		// Create a new client with the new server
-		oldServer := c.serverConn.RemoteAddr().String()
-		c.serverConn.Close()
-		client, conn := connect(addr, c.serverPort)
-		c.serverConn = conn
-		c.dnsClient = &client
-
-		return fmt.Errorf("server changed from %s to %s", oldServer, addr)
 	}
 
 	return nil
