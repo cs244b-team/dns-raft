@@ -196,7 +196,11 @@ func (s *DDNSServer) handleQueryRequest(w dns.ResponseWriter, r *dns.Msg) {
 		} else {
 			for _, record := range records {
 				if question.Qtype == record.Header().Rrtype || question.Qtype == dns.TypeANY {
-					m.Answer = append(m.Answer, record)
+					if record.Header().Rrtype == dns.TypeNS {
+						m.Ns = append(m.Ns, record)
+					} else {
+						m.Answer = append(m.Answer, record)
+					}
 				}
 			}
 
