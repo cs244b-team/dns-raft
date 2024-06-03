@@ -278,7 +278,6 @@ func (node *Node) UpdateValue(key string, cmdType CommandType, value Optional[dn
 	if node.getStatus() == Leader {
 		entry := LogEntry{node.getCurrentTerm(), Command{cmdType, key, value}}
 		index := len(node.log) + 1
-		log.Debugf("Appending entry %v to node %d with update channel for 1-index %d", entry, node.serverId, index)
 		err := node.persistLogEntry(entry, uint64(index), false)
 		if err != nil {
 			node.mu.Unlock()
