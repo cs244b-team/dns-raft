@@ -25,3 +25,6 @@ go.work.sum
 .DS_Store
 
 dns-raft
+
+.ipynb_checkpoints
+__pycache__

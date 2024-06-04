@@ -75,6 +75,17 @@ func monitorIp(updateChannel chan netip.Addr) {
 	}
 }
 
+func monitorIpOnce(updateChannel chan netip.Addr) {
+	current, err := netip.ParseAddr(UpdateOnceIP)
+	if err != nil {
+		log.Fatalf("Error getting IP: %v", err)
+	}
+
+	log.Infof("Current IP: %s", current)
+	updateChannel <- current
+	close(updateChannel)
+}
+
 func monitorIpEval(updateChannel chan netip.Addr) {
 	// Send updates as fast as possible
 	for {
@@ -85,6 +96,8 @@ func monitorIpEval(updateChannel chan netip.Addr) {
 	}
 }
 
+var UpdateOnceIP string
+
 func main() {
 	common.InitLogger()
 
@@ -92,11 +105,16 @@ func main() {
 	domain := flag.String("domain", "www.example.com.", "Domain to update")
 	server := flag.String("server", "127.0.0.1:8053", "DNS server")
 	eval := flag.Bool("eval", false, "Run in evaluation mode")
+	one_update := flag.String("oneupdate", "", "Only issue one DNS update")
 	flag.Parse()
 
 	var monitorFunc func(chan netip.Addr) = monitorIp
 	if *eval {
 		monitorFunc = monitorIpEval
+	}
+	if len(*one_update) > 0 {
+		UpdateOnceIP = *one_update
+		monitorFunc = monitorIpOnce
 	}
 
 	serverSplit := strings.Split(*server, ":")
