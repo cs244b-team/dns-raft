@@ -26,7 +26,7 @@ func DefaultConfig() Config {
 		HeartbeatInterval:            75,
 		MaximumBatchSize:             10,
 		RPCRetryInterval:             75,
-		ForwardToLeaderRetryInterval: 150,
+		ForwardToLeaderRetryInterval: 150000,
 		UpdateTimeout:                5000,
 	}
 }
