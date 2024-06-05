@@ -16,6 +16,15 @@ const (
 	UpdateTimeout     = 5 * time.Second
 )
 
+func connect(server string, serverPort string) (dns.Client, *dns.Conn) {
+	client := dns.Client{Net: "udp"}
+	conn, err := client.Dial(server + ":" + serverPort)
+	if err != nil {
+		log.Fatalf("Error dialing server: %v", err)
+	}
+	return client, conn
+}
+
 type DDNSClient struct {
 	zone       string
 	domain     string
@@ -38,44 +47,25 @@ func NewDDNSClient(zone string, domain string, server string, serverPort string,
 	}
 }
 
-func (c *DDNSClient) Run() {
+func (c *DDNSClient) RunMonitor() {
 	ch := make(chan netip.Addr)
 	go c.monitorIp(ch)
 	for addr := range ch {
-		record := c.createUpdateRecord(addr)
+		m := c.CreateUpdateMessage(addr)
 		log.Debugf("Updating %s to %s", c.domain, addr)
-		c.sendUpdate(addr, record)
+		c.SendUpdate(addr, m)
 	}
 }
 
-func (c *DDNSClient) sendUpdate(addr netip.Addr, record *dns.Msg) {
-	timer := time.NewTimer(UpdateTimeout)
-	start := time.Now()
-	for {
-		select {
-		case <-timer.C:
-			log.Errorf("Update for %s to %s timed out", c.domain, addr)
-			return
-		default:
-			err := c.sendUpdateOnce(record)
-			if err == nil {
-				log.Infof("Successfully updated %s to %s in %v", c.domain, addr, time.Since(start))
-				return
-			}
-			log.Errorf("Error updating %s to %s: %v", c.domain, addr, err)
-		}
-	}
-}
-
-func (c *DDNSClient) sendUpdateOnce(record *dns.Msg) error {
-	reply, _, err := c.dnsClient.ExchangeWithConn(record, c.serverConn)
+func (c *DDNSClient) SendMessage(m *dns.Msg) error {
+	reply, _, err := c.dnsClient.ExchangeWithConn(m, c.serverConn)
 
 	if err != nil {
 		return err
 	}
 
-	if reply.Id != record.Id {
-		return fmt.Errorf("received response with mismatched ID: %d != %d", reply.Id, record.Id)
+	if reply.Id != m.Id {
+		return fmt.Errorf("received response with mismatched ID: %d != %d", reply.Id, m.Id)
 	}
 
 	if reply.Rcode != dns.RcodeSuccess {
@@ -85,16 +75,33 @@ func (c *DDNSClient) sendUpdateOnce(record *dns.Msg) error {
 	return nil
 }
 
-func connect(server string, serverPort string) (dns.Client, *dns.Conn) {
-	client := dns.Client{Net: "udp"}
-	conn, err := client.Dial(server + ":" + serverPort)
-	if err != nil {
-		log.Fatalf("Error dialing server: %v", err)
+func (c *DDNSClient) SendUpdate(addr netip.Addr, m *dns.Msg) {
+	timer := time.NewTimer(UpdateTimeout)
+	for {
+		select {
+		case <-timer.C:
+			log.Errorf("Update for %s to %s timed out", c.domain, addr)
+			return
+		default:
+			// TODO: handle removal of domain for demo
+			start := time.Now()
+			err := c.SendMessage(m)
+			if err == nil {
+				log.Infof("Successfully updated %s to %s in %v", c.domain, addr, time.Since(start))
+				return
+			}
+			log.Errorf("Error updating %s to %s: %v", c.domain, addr, err)
+		}
 	}
-	return client, conn
 }
 
-func (c *DDNSClient) createUpdateRecord(addr netip.Addr) *dns.Msg {
+func (c *DDNSClient) CreateQuestion(domain string) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetQuestion(domain, dns.TypeA)
+	return m
+}
+
+func (c *DDNSClient) CreateUpdateMessage(addr netip.Addr) *dns.Msg {
 	m := new(dns.Msg)
 	m.SetUpdate(c.zone)
 	if addr.Is6() {
@@ -125,7 +132,7 @@ func (c *DDNSClient) createUpdateRecord(addr netip.Addr) *dns.Msg {
 	return m
 }
 
-func (c *DDNSClient) createRemoveRecord() *dns.Msg {
+func (c *DDNSClient) CreateRemoveMessage() *dns.Msg {
 	m := new(dns.Msg)
 	m.SetUpdate(c.zone)
 	m.Remove([]dns.RR{
