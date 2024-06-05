@@ -120,7 +120,7 @@ func (node *Node) ForwardToLeader(args ForwardToLeaderArgs, reply *ForwardToLead
 		node.mu.Unlock()
 		err := node.UpdateValue(args.Key, args.CmdType, args.Value)
 		if err != nil {
-			log.Error("node-%d UpdateValue failed: %v", node.serverId, err)
+			log.Errorf("node-%d UpdateValue failed: %v", node.serverId, err)
 		}
 		response.Success = err != nil
 		*reply = response
@@ -261,6 +261,40 @@ func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, c
 		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
 		// that is okay because they are idempotent.
 		return callRPC[ResponseType](p, rpcType, args, timeout, ctx)
+	case resp := <-call.Done:
+		if resp != nil && resp.Error != nil {
+			if resp.Error == rpc.ErrShutdown {
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
+				p.client = nil
+			}
+			return None[ResponseType](), resp.Error
+		}
+		return Some[ResponseType](reply), nil
+	case <-ctx.Done():
+		log.Debugf("RPC %s to node-%d cancelled", rpcType, p.id)
+		return None[ResponseType](), errors.New("RPC cancelled")
+	}
+}
+
+// Call RPC on leader. It will retry every TIMEOUT ms and return the reply (or an error) until CTX errors. Blocking.
+func callRPCOnLeader[ResponseType any](node *Node, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
+	node.mu.Lock()
+	p := node.getLeaderPeer()
+	// Do not continue calling RPC if p cannot be connected to
+	if p == nil || (p.client == nil && p.Connect() != nil) {
+		node.mu.Unlock()
+		return None[ResponseType](), errors.New("could not connect")
+	}
+	node.mu.Unlock()
+	var reply ResponseType
+	call := p.client.Go(rpcType, args, &reply, nil)
+	select {
+	case <-time.After(time.Duration(timeout) * time.Millisecond):
+		log.Warnf("RPC %s to node-%d timed out", rpcType, p.id)
+		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
+		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
+		// that is okay because they are idempotent.
+		return callRPCOnLeader[ResponseType](node, rpcType, args, timeout, ctx)
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
 			if resp.Error == rpc.ErrShutdown {

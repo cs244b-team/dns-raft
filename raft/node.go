@@ -305,15 +305,9 @@ func (node *Node) UpdateValue(key string, cmdType CommandType, value Optional[dn
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		leaderPeer := node.getLeaderPeer()
-		if leaderPeer == nil {
-			node.mu.Unlock()
-			return errors.New(fmt.Sprintf("No leader found for update request for key %s, value %v (sent to node with status %v)", key, value, node.getStatus()))
-		}
-
 		args := ForwardToLeaderArgs{Key: key, CmdType: cmdType, Value: value}
 		node.mu.Unlock()
-		_, err := callRPC[ForwardToLeaderResponse](leaderPeer, "Node.ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
+		_, err := callRPCOnLeader[ForwardToLeaderResponse](node, "Node.ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
 		return err
 	} else {
 		node.mu.Unlock()
