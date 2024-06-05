@@ -578,6 +578,9 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 			node.mu.Lock()
 			idx, term := node.prevLogIndexAndTerm(p.id)
 			nextIdx := idx + 1
+			if idx == -1 {
+				log.Infof("node-%d has prevIdx -1 with log length %d", node.serverId, len(node.log))
+			}
 			entries := make([]LogEntry, 0)
 			if nextIdx < len(node.log) {
 				// Credit to https://arorashu.github.io/posts/raft.html for giving an idea on how to separate heartbeats from updating followers
