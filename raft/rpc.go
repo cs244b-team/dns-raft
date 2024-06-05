@@ -251,6 +251,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
 	if p.client == nil && p.Connect() != nil {
+		p.client = nil
 		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
@@ -283,6 +284,9 @@ func callRPCOnLeader[ResponseType any](node *Node, rpcType string, args any, tim
 	p := node.getLeaderPeer()
 	// Do not continue calling RPC if p cannot be connected to
 	if p == nil || (p.client == nil && p.Connect() != nil) {
+		if p != nil {
+			p.client = nil
+		}
 		node.mu.Unlock()
 		return None[ResponseType](), errors.New("could not connect")
 	}
@@ -314,6 +318,7 @@ func callRPCOnLeader[ResponseType any](node *Node, rpcType string, args any, tim
 func callRPCNoRetry[ResponseType any](p *Peer, rpcType string, args any, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
 	if p.client == nil && p.Connect() != nil {
+		p.client = nil
 		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
