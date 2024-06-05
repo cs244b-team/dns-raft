@@ -261,7 +261,7 @@ func (node *Node) setValue(key string, record dns.RR) {
 	// Quick and dirty way to not duplicate record in store
 	for _, storeRecord := range node.kv_store[key] {
 		if dns.IsDuplicate(record, storeRecord) {
-			log.Warnf("node-%d ingoring duplicate record %s", node.serverId, record.String())
+			log.Warnf("node-%d ignoring duplicate record %s", node.serverId, record.String())
 			return
 		}
 	}
