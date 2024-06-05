@@ -222,16 +222,14 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 	// 4. Append any new entries not already in the log and persist them to storage
 	prevNumEntries := len(node.log)
 	log.Debugf("node-%d appending %d entries to log (logTruncated %t), starting at index %d, log length %d, i %d", node.serverId, len(args.Entries), logTruncated, startInsertingAtIdx, len(node.log), prevNumEntries)
-	for i, entry := range args.Entries {
-		// WAL log entries are 1-indexed
-		persistErr := node.persistLogEntry(entry, uint64(prevNumEntries+i+1), logTruncated && i == 0)
+	if len(args.Entries) > 0 {
+		persistErr := node.persistLogBatch(args.Entries, uint64(prevNumEntries+1), logTruncated)
 		if persistErr != nil {
 			*reply = response
 			return persistErr
 		}
-		// Only append to the log after it's been written to the WAL
-		node.log = append(node.log, entry)
 	}
+	node.log = append(node.log, args.Entries...)
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit >= 0 && args.LeaderCommit > node.getCommitIndex() {

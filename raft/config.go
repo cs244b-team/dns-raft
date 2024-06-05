@@ -8,6 +8,9 @@ type Config struct {
 	// How often a Leader should send empty Append Entry heartbeats
 	HeartbeatInterval int
 
+	// Heartbeat batch size
+	MaximumBatchSize int
+
 	// How often RPCs should be retried
 	RPCRetryInterval             int
 	ForwardToLeaderRetryInterval int
@@ -21,6 +24,7 @@ func DefaultConfig() Config {
 		ElectionTimeoutMin:           150,
 		ElectionTimeoutMax:           300,
 		HeartbeatInterval:            75,
+		MaximumBatchSize:             10,
 		RPCRetryInterval:             75,
 		ForwardToLeaderRetryInterval: 150,
 		UpdateTimeout:                5000,

@@ -563,6 +563,55 @@ func (node *Node) persistLogEntry(entry LogEntry, logIndex uint64, truncateBack 
 	return nil
 }
 
+func (node *Node) persistLogBatch(entries []LogEntry, startingLogIndex uint64, truncateBack bool) error {
+	if startingLogIndex <= 0 {
+		log.Fatalf("node-%d tried to write to an invalid index (%d) in our 1-indexed persistent log", node.serverId, startingLogIndex)
+	}
+
+	batch := new(wal.Batch)
+	for i, entry := range entries {
+		bytes, err := common.EncodeToBytes(entry)
+		if err != nil {
+			return err
+		}
+		batch.Write(startingLogIndex+uint64(i), bytes)
+	}
+
+	lastSavedIndex, err := node.logEntryWAL.LastIndex()
+	if err != nil {
+		return fmt.Errorf("node-%d failed to get wal last index: %s", node.serverId, err)
+	}
+
+	// If log is non-empty, we may need to truncate
+	if truncateBack {
+		// We only need to truncate the log if logIndex is within the current log
+		if startingLogIndex <= lastSavedIndex {
+			if startingLogIndex > 1 {
+				if err = node.logEntryWAL.TruncateBack(startingLogIndex - 1); err != nil {
+					return fmt.Errorf("node-%d batched logEntryWAL.TruncateBack failed with logIndex: %d", node.serverId, startingLogIndex)
+				}
+			} else {
+				// We want to insert into logIndex 1, so we must clear the entire log
+				node.ResetWAL()
+			}
+		}
+	} else if startingLogIndex <= lastSavedIndex {
+		log.Fatalf("node-%d logEntryWAL received a request to batch write w/o truncateBack to logIndex %d when the log has been persisted until %d", node.serverId, startingLogIndex, lastSavedIndex)
+	}
+
+	// By now, we have truncated the log, as needed. We should append the log entry now.
+	if startingLogIndex > lastSavedIndex+1 {
+		// We want to write past the lastSavedIndex, which leaves a hole in our log
+		return fmt.Errorf("node-%d attempted to persist log with a hole at index %d when log goes to index %d", node.serverId, startingLogIndex, lastSavedIndex)
+	}
+
+	if err = node.logEntryWAL.WriteBatch(batch); err != nil {
+		return fmt.Errorf("node-%d logEntryWAL.Write failed with logIndex: %d with err %v", node.serverId, startingLogIndex, err)
+	}
+
+	return nil
+}
+
 // send AppendEntries RPCs to all peers when heartbeats timeout or receive client requests
 // must be called with the lock held
 func (node *Node) sendAppendEntries(ctx context.Context) {
@@ -575,10 +624,13 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 	for i, peer := range node.peers {
 		idx, term := node.prevLogIndexAndTerm(peer.id)
 		nextIdx := idx + 1
+		if nextIdx == 0 {
+			log.Warnf("prevIDX will be -1 with log length of %d", node.serverId)
+		}
 		entries := make([]LogEntry, 0)
 		if nextIdx < len(node.log) {
 			// Credit to https://arorashu.github.io/posts/raft.html for giving an idea on how to separate heartbeats from updating followers
-			entries = node.log[nextIdx : nextIdx+1]
+			entries = node.log[nextIdx:min(nextIdx+node.config.MaximumBatchSize, len(node.log))]
 		}
 		args := AppendEntriesArgs{
 			node.getCurrentTerm(),
@@ -619,13 +671,16 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 				node.nextIndex[p.id] = nextIdx - 1
 			} else if nextIdx < len(node.log) {
 				// We can consider the nextIndex to have been accepted by the peer
-				node.matchIndex[p.id] = nextIdx
-				// The leader always has a log match for nextIdx
-				if (node.countLogMatches(nextIdx)+1) >= (len(node.cluster)+1)/2 && node.log[nextIdx].Term == node.getCurrentTerm() && nextIdx > node.commitIndex {
-					node.setCommitIndex(nextIdx)
-					node.applyLogCommands()
+				node.matchIndex[p.id] = args.PrevLogIndex + len(args.Entries)
+				// The leader always has a log match for nextIdx...args.PrevLogIndex + len(args.Entries)
+				for currIdx := args.PrevLogIndex + len(args.Entries); currIdx >= nextIdx; currIdx-- {
+					if (node.countLogMatches(currIdx)+1) >= (len(node.cluster)+1)/2 && node.log[currIdx].Term == node.getCurrentTerm() && currIdx > node.commitIndex {
+						node.setCommitIndex(currIdx)
+						node.applyLogCommands()
+						break
+					}
 				}
-				node.nextIndex[p.id] = nextIdx + 1
+				node.nextIndex[p.id] = args.PrevLogIndex + len(args.Entries) + 1
 			}
 		}(peer, i)
 	}
