@@ -33,3 +33,5 @@ cmd/client/client
 cmd/server/server
 
 *.ipynb
+.env
+*.log

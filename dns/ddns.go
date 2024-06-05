@@ -36,7 +36,7 @@ type DDNSClient struct {
 
 func NewDDNSClient(zone string, domain string, server string, serverPort string, monitorIp func(chan netip.Addr)) *DDNSClient {
 	client, conn := connect(server, serverPort)
-	log.Infof("Created dynamic DNS client for %s in zone %s with server %s", domain, zone, server)
+	log.Debugf("Created dynamic DNS client for %s in zone %s with server %s", domain, zone, server)
 	return &DDNSClient{
 		zone:       zone,
 		domain:     domain,
@@ -57,22 +57,22 @@ func (c *DDNSClient) RunMonitor() {
 	}
 }
 
-func (c *DDNSClient) SendMessage(m *dns.Msg) error {
-	reply, _, err := c.dnsClient.ExchangeWithConn(m, c.serverConn)
+func (c *DDNSClient) SendMessage(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
+	reply, rtt, err := c.dnsClient.ExchangeWithConn(m, c.serverConn)
 
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 
 	if reply.Id != m.Id {
-		return fmt.Errorf("received response with mismatched ID: %d != %d", reply.Id, m.Id)
+		return nil, 0, fmt.Errorf("received response with mismatched ID: %d != %d", reply.Id, m.Id)
 	}
 
 	if reply.Rcode != dns.RcodeSuccess {
-		return fmt.Errorf("received error response: %v", dns.RcodeToString[reply.Rcode])
+		return nil, 0, fmt.Errorf("received error response: %v", dns.RcodeToString[reply.Rcode])
 	}
 
-	return nil
+	return reply, rtt, err
 }
 
 func (c *DDNSClient) SendUpdate(addr netip.Addr, m *dns.Msg) {
@@ -84,10 +84,9 @@ func (c *DDNSClient) SendUpdate(addr netip.Addr, m *dns.Msg) {
 			return
 		default:
 			// TODO: handle removal of domain for demo
-			start := time.Now()
-			err := c.SendMessage(m)
+			_, rtt, err := c.SendMessage(m)
 			if err == nil {
-				log.Infof("Successfully updated %s to %s in %v", c.domain, addr, time.Since(start))
+				log.Infof("Successfully updated %s to %s in %v", c.domain, addr, rtt)
 				return
 			}
 			log.Errorf("Error updating %s to %s: %v", c.domain, addr, err)

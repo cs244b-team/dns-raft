@@ -125,8 +125,9 @@ func main() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
 				var m *_dns.Msg
+				client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
+
 				for {
 					// Either create update or query request
 					if *update {
@@ -137,12 +138,12 @@ func main() {
 					} else {
 						m = client.CreateQuestion(*domain)
 					}
-					start := time.Now()
-					err := client.SendMessage(m)
+					_, rtt, err := client.SendMessage(m)
 					if err != nil {
 						log.Errorf("Error sending request: %v", err)
+					} else {
+						log.Infof("Response latency: %v", rtt)
 					}
-					log.Infof("Response latency: %v", time.Since(start))
 				}
 			}()
 		}
