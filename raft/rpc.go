@@ -221,6 +221,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 
 	// 4. Append any new entries not already in the log and persist them to storage
 	prevNumEntries := len(node.log)
+	log.Debugf("node-%d appending %d entries to log (logTruncated %t), starting at index %d, log length %d, i %d", node.serverId, len(args.Entries), logTruncated, startInsertingAtIdx, len(node.log), prevNumEntries)
 	for i, entry := range args.Entries {
 		// WAL log entries are 1-indexed
 		persistErr := node.persistLogEntry(entry, uint64(prevNumEntries+i+1), logTruncated && i == 0)
