@@ -307,7 +307,9 @@ func (node *Node) UpdateValue(key string, cmdType CommandType, value Optional[dn
 
 		args := ForwardToLeaderArgs{Key: key, CmdType: cmdType, Value: value}
 		node.mu.Unlock()
-		_, err := callRPCOnLeader[ForwardToLeaderResponse](node, "Node.ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
+		
+		// TODO(jkim): fix retry interval
+		_, err := callRPCOnLeader[ForwardToLeaderResponse](node, "Node.ForwardToLeader", args, node.config.RPCRetryInterval * 100, ctx)
 		return err
 	} else {
 		node.mu.Unlock()

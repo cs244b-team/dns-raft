@@ -28,3 +28,6 @@ dns-raft
 
 .ipynb_checkpoints
 __pycache__
+
+cmd/client/client
+cmd/server/server

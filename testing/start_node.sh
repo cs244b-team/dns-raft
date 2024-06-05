@@ -24,4 +24,4 @@ NODES=(
 
 echo "Starting node-$1"
 ssh -i ~/.ssh/id_ed25519_gh user@${NODES[$1]} \
-"sudo rm -rf /tmp/*.logents /tmp/*.state /tmp*.log && cd dns-raft/cmd/server && go build . && sudo -b LOG_LEVEL=DEBUG ./server --node ${NODE_0_INTERNAL_IP}:9000 --node ${NODE_1_INTERNAL_IP}:9001 --node ${NODE_2_INTERNAL_IP}:9002 --node ${NODE_3_INTERNAL_IP}:9003 --node ${NODE_4_INTERNAL_IP}:9004 -id ${1} --port 8053 > /tmp/node-${1}.log 2>&1"
+"sudo rm -rf /tmp/*.logents /tmp/*.state /tmp*.log && cd dns-raft/cmd/server && go build . && sudo -b LOG_LEVEL=DEBUG ./server --node ${NODE_0_INTERNAL_IP}:9000 --node ${NODE_1_INTERNAL_IP}:9000 --node ${NODE_2_INTERNAL_IP}:9000 --node ${NODE_3_INTERNAL_IP}:9000 --node ${NODE_4_INTERNAL_IP}:9000 -id ${1} --port 8053 > /tmp/node-${1}.log 2>&1"
