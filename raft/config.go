@@ -9,7 +9,8 @@ type Config struct {
 	HeartbeatInterval int
 
 	// How often RPCs should be retried
-	RPCRetryInterval int
+	RPCRetryInterval             int
+	ForwardToLeaderRetryInterval int
 
 	// Time to wait for log being applied before replying to client
 	UpdateTimeout int
@@ -17,11 +18,12 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		ElectionTimeoutMin: 150,
-		ElectionTimeoutMax: 300,
-		HeartbeatInterval:  75,
-		RPCRetryInterval:   75,
-		UpdateTimeout:      5000,
+		ElectionTimeoutMin:           150,
+		ElectionTimeoutMax:           300,
+		HeartbeatInterval:            75,
+		RPCRetryInterval:             75,
+		ForwardToLeaderRetryInterval: 150,
+		UpdateTimeout:                5000,
 	}
 }
 

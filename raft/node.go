@@ -307,7 +307,7 @@ func (node *Node) UpdateValue(key string, cmdType CommandType, value Optional[dn
 
 		args := ForwardToLeaderArgs{Key: key, CmdType: cmdType, Value: value}
 		node.mu.Unlock()
-		_, err := callRPCOnLeader[ForwardToLeaderResponse](node, "Node.ForwardToLeader", args, node.config.RPCRetryInterval, ctx)
+		_, err := callRPCOnLeader[ForwardToLeaderResponse](node, "Node.ForwardToLeader", args, node.config.ForwardToLeaderRetryInterval, ctx)
 		return err
 	} else {
 		node.mu.Unlock()
@@ -571,25 +571,29 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 	}
 
 	log.Debugf("node-%d sending heartbeats", node.serverId)
-	for _, peer := range node.peers {
-		go func(p *Peer) {
-			node.mu.Lock()
-			idx, term := node.prevLogIndexAndTerm(p.id)
-			nextIdx := idx + 1
-			entries := make([]LogEntry, 0)
-			if nextIdx < len(node.log) {
-				// Credit to https://arorashu.github.io/posts/raft.html for giving an idea on how to separate heartbeats from updating followers
-				entries = node.log[nextIdx : nextIdx+1]
-			}
-			args := AppendEntriesArgs{
-				node.getCurrentTerm(),
-				node.serverId,
-				idx,
-				term,
-				entries,
-				node.getCommitIndex(),
-			}
-			node.mu.Unlock()
+	peer_args := make([]AppendEntriesArgs, len(node.peers))
+	for i, peer := range node.peers {
+		idx, term := node.prevLogIndexAndTerm(peer.id)
+		nextIdx := idx + 1
+		entries := make([]LogEntry, 0)
+		if nextIdx < len(node.log) {
+			// Credit to https://arorashu.github.io/posts/raft.html for giving an idea on how to separate heartbeats from updating followers
+			entries = node.log[nextIdx : nextIdx+1]
+		}
+		args := AppendEntriesArgs{
+			node.getCurrentTerm(),
+			node.serverId,
+			idx,
+			term,
+			entries,
+			node.getCommitIndex(),
+		}
+		peer_args[i] = args
+	}
+	for i, peer := range node.peers {
+		go func(p *Peer, i int) {
+			args := peer_args[i]
+			nextIdx := args.PrevLogIndex + 1
 			reply, err := callRPCNoRetry[AppendEntriesResponse](p, "Node.AppendEntries", args, ctx)
 			if err != nil {
 				log.Errorf("node-%d experienced AppendEntries error: %s", p.id, err)
@@ -623,7 +627,7 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 				}
 				node.nextIndex[p.id] = nextIdx + 1
 			}
-		}(peer)
+		}(peer, i)
 	}
 }
 
@@ -682,6 +686,8 @@ func (node *Node) convertToFollower(term int) {
 
 	// Since we always convert to follower when we receive a higher term, our votedFor should be reset
 	node.setVotedFor(-1)
+	// Also, reset the leaderId
+	node.setLeaderId(-1)
 }
 
 func (node *Node) convertToCandidate() {
