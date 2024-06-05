@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
+	_dns "github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -75,6 +77,8 @@ func monitorIp(updateChannel chan netip.Addr) {
 	}
 }
 
+var UpdateOnceIP string
+
 func monitorIpOnce(updateChannel chan netip.Addr) {
 	current, err := netip.ParseAddr(UpdateOnceIP)
 	if err != nil {
@@ -86,42 +90,63 @@ func monitorIpOnce(updateChannel chan netip.Addr) {
 	close(updateChannel)
 }
 
-func monitorIpEval(updateChannel chan netip.Addr) {
-	// Send updates as fast as possible
-	for {
-		ip := rand.Uint32()
-		bytes := [4]byte{byte(ip >> 24), byte(ip >> 16), byte(ip >> 8), byte(ip)}
-		updateChannel <- netip.AddrFrom4(bytes)
-		// TODO: add 16-byte IPs
-	}
-}
-
-var UpdateOnceIP string
-
 func main() {
 	common.InitLogger()
 
+	domain := flag.String("domain", "www.example.com.", "Domain to query for or update")
 	zone := flag.String("zone", "example.com.", "DNS zone")
-	domain := flag.String("domain", "www.example.com.", "Domain to update")
-	server := flag.String("server", "127.0.0.1:8053", "DNS server")
-	eval := flag.Bool("eval", false, "Run in evaluation mode")
-	one_update := flag.String("oneupdate", "", "Only issue one DNS update")
-	flag.Parse()
+	server := flag.String("server", "127.0.0.1:8053", "DNS server to connect to")
 
-	var monitorFunc func(chan netip.Addr) = monitorIp
-	if *eval {
-		monitorFunc = monitorIpEval
-	}
-	if len(*one_update) > 0 {
-		UpdateOnceIP = *one_update
-		monitorFunc = monitorIpOnce
-	}
+	// Testing
+	eval := flag.Bool("eval", false, "Run in evaluation mode")
+	numRoutines := flag.Int("routines", 8, "Number of goroutines to use in evaluation mode")
+	update := flag.Bool("update", false, "Send updates to server (default sends queries)")
+	one_update := flag.String("oneupdate", "", "Only issue one DNS update")
+
+	flag.Parse()
 
 	serverSplit := strings.Split(*server, ":")
 	if len(serverSplit) != 2 {
 		log.Fatalf("Invalid server address: %s", *server)
 	}
 
-	client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
-	client.Run()
+	var monitorFunc func(chan netip.Addr) = monitorIp
+	if !*eval {
+		if len(*one_update) > 0 {
+			UpdateOnceIP = *one_update
+			monitorFunc = monitorIpOnce
+		}
+		client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
+		client.RunMonitor()
+	} else {
+		var wg sync.WaitGroup
+
+		for i := 1; i <= *numRoutines; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
+				var m *_dns.Msg
+				for {
+					// Either create update or query request
+					if *update {
+						ip := rand.Uint32()
+						bytes := [4]byte{byte(ip >> 24), byte(ip >> 16), byte(ip >> 8), byte(ip)}
+						addr := netip.AddrFrom4(bytes)
+						m = client.CreateUpdateMessage(addr)
+					} else {
+						m = client.CreateQuestion(*domain)
+					}
+					start := time.Now()
+					err := client.SendMessage(m)
+					if err != nil {
+						log.Errorf("Error sending request: %v", err)
+					}
+					log.Infof("Response latency: %v", time.Since(start))
+				}
+			}()
+		}
+
+		wg.Wait()
+	}
 }
