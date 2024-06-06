@@ -190,8 +190,13 @@ def main(args):
         LOAD_BALANCER_IP, args.goroutines, args.rate, args.write, args.experiment_name
     )
 
+    logger.debug("Waiting for client to start...")
+    time.sleep(5)
+
     if args.fault_tolerance:
-        logger.info(f"Running for {args.kill_after}s before killing {node_name_to_kill}")
+        logger.info(
+            f"Running for {args.kill_after}s before killing {node_name_to_kill}"
+        )
         time.sleep(args.kill_after)
         node_to_kill = (
             leader if args.kill_leader else cluster.get_random_follower(leader)
@@ -200,12 +205,16 @@ def main(args):
         logger.info(f"Killing {node_name_to_kill} (node-{node_to_kill.node_id})")
         cluster.stop_node(node_to_kill)
 
-        logger.info(f"Running for {args.restart_after}s before restarting {node_name_to_kill}")
+        logger.info(
+            f"Running for {args.restart_after}s before restarting {node_name_to_kill}"
+        )
         time.sleep(args.restart_after)
         logger.info(f"Restarting {node_name_to_kill} (node-{node_to_kill.node_id})")
         cluster.start_node(node_to_kill)
 
-        logger.info(f"Running for {args.kill_after}s after restarting {node_name_to_kill}")
+        logger.info(
+            f"Running for {args.kill_after}s after restarting {node_name_to_kill}"
+        )
         time.sleep(args.kill_after)
     else:
         logger.info(f"Running for {args.duration}s before stopping experiment")
