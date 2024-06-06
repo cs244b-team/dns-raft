@@ -156,7 +156,7 @@ def run_client(
     )
 
 
-def main(args):
+def test_catamaran(args):
     nodes = [
         Node(node_id=0, public_ip="34.168.204.145", private_ip="10.138.0.2"),
         Node(node_id=1, public_ip="35.203.169.53", private_ip="10.138.0.3"),
@@ -164,11 +164,6 @@ def main(args):
         Node(node_id=3, public_ip="104.199.119.116", private_ip="10.138.0.5"),
         Node(node_id=4, public_ip="35.233.157.154", private_ip="10.138.0.6"),
     ]
-
-    init_logger()
-    os.mkdir(args.experiment_name)
-    with open(os.path.join(args.experiment_name, "settings.txt"), "w") as f:
-        f.write(str(args))
 
     cluster = Cluster(nodes, args.experiment_name)
     cluster.start()
@@ -191,7 +186,7 @@ def main(args):
     )
 
     logger.debug("Waiting for client to start...")
-    time.sleep(5)
+    time.sleep(2)
 
     if args.fault_tolerance:
         logger.info(
@@ -222,6 +217,32 @@ def main(args):
 
     client_process.kill()
     cluster.stop()
+
+
+def test_bind9(args):
+    client_process = run_client(
+        LOAD_BALANCER_IP, args.goroutines, args.rate, args.write, args.experiment_name
+    )
+
+    logger.debug("Waiting for client to start...")
+    time.sleep(2)
+
+    logger.info(f"Running for {args.duration}s before stopping experiment")
+    time.sleep(args.duration)
+
+    client_process.kill()
+
+
+def main(args):
+    init_logger()
+    os.mkdir(args.experiment_name)
+    with open(os.path.join(args.experiment_name, "settings.txt"), "w") as f:
+        f.write(str(args))
+
+    if args.bind9:
+        test_bind9(args)
+    else:
+        test_catamaran(args)
 
 
 if __name__ == "__main__":
@@ -288,6 +309,13 @@ if __name__ == "__main__":
         type=int,
         default=5,
         help="Time in seconds until the killed node is restarted after it was killed",
+    )
+
+    parser.add_argument(
+        "--bind9",
+        action="store_true",
+        default=False,
+        help="Run a client against a BIND9 server instead of a Catamaran cluster",
     )
 
     args = parser.parse_args()
