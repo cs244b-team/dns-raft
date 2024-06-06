@@ -35,3 +35,4 @@ cmd/server/server
 *.ipynb
 .env
 *.log
+*.txt
