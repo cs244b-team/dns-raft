@@ -117,7 +117,21 @@ func main() {
 		return
 	}
 
-	// Evaluation mode
+	// If we are running in query mode, we should create at least one record to avoid NXDOMAIN responses
+	if !*update {
+		client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], nil)
+		addr, err := getIp()
+		if err != nil {
+			log.Fatalf("Error getting IP: %v", err)
+		}
+
+		m := client.CreateUpdateMessage(addr)
+		_, _, err = client.SendMessage(m)
+		if err != nil {
+			log.Fatalf("Error sending request: %v", err)
+		}
+	}
+
 	var wg sync.WaitGroup
 	for i := 0; i < *numRoutines; i++ {
 		wg.Add(1)

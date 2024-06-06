@@ -82,9 +82,11 @@ class Cluster:
 
     def start_node(self, node: Node):
         node_addresses = [
-            f"{n.private_ip}:{RAFT_PORT}"
-            if n.node_id != node.node_id
-            else "0.0.0.0:9000"
+            (
+                f"{n.private_ip}:{RAFT_PORT}"
+                if n.node_id != node.node_id
+                else "0.0.0.0:9000"
+            )
             for n in self.nodes
         ]
 
@@ -108,11 +110,7 @@ class Cluster:
         )
 
     def stop_node(self, node: Node) -> None:
-        p = run_remote_cmd(node, f"sudo kill -9 $(sudo lsof -t -i:{DNS_SERVER_PORT})")
-        if p.returncode != 0:
-            logger.debug(
-                f"node-{node.node_id} couldn't be killed (server might not be running)"
-            )
+        run_remote_cmd(node, f"sudo kill -9 $(sudo lsof -t -i:{DNS_SERVER_PORT})")
 
     def get_leader(self) -> T.Optional[Node]:
         suspected_leaders = {}
@@ -142,14 +140,16 @@ class Cluster:
 
         return None
 
-    def get_random_follower(self, leader: Node):
+    def get_random_follower(self, leader: Node) -> Node:
         return random.choice([n for n in self.nodes if n.node_id != leader.node_id])
 
 
-def run_client(server_ip: str, num_routines: int, update_mode: bool, log_prefix: str):
+def run_client(
+    server_ip: str, num_routines: int, rate: int, update_mode: bool, log_prefix: str
+):
     return run_cmd(
-        f"cd cmd/client && go build . && ./client --server {server_ip}:{DNS_SERVER_PORT} "
-        f"--eval --routines {num_routines} {'--update' if update_mode else ''}",
+        f"cd cmd/client && go run . --server {server_ip}:{DNS_SERVER_PORT} "
+        f"--eval --routines {num_routines} --rate {rate} {'--update' if update_mode else ''}",
         background=True,
         stdout=open(os.path.join(log_prefix, "client.log"), "w"),
         stderr=subprocess.STDOUT,
@@ -187,23 +187,39 @@ def main(args):
     )
 
     client_process = run_client(
-        LOAD_BALANCER_IP, args.goroutines, args.write, args.experiment_name
+        LOAD_BALANCER_IP, args.goroutines, args.rate, args.write, args.experiment_name
     )
 
-    # TODO: some experiments won't require a leader to be killed, so we can make a flag
-    # to do this and skip over this... and it'll just be like the testing duration
+    logger.debug("Waiting for client to start...")
+    time.sleep(5)
 
-    time.sleep(args.kill_after)
-    node_to_kill = leader if args.kill_leader else cluster.get_random_follower(leader)
+    if args.fault_tolerance:
+        logger.info(
+            f"Running for {args.kill_after}s before killing {node_name_to_kill}"
+        )
+        time.sleep(args.kill_after)
+        node_to_kill = (
+            leader if args.kill_leader else cluster.get_random_follower(leader)
+        )
 
-    logger.info(f"Killing {node_name_to_kill} (node-{node_to_kill.node_id})")
-    cluster.stop_node(node_to_kill)
+        logger.info(f"Killing {node_name_to_kill} (node-{node_to_kill.node_id})")
+        cluster.stop_node(node_to_kill)
 
-    time.sleep(args.restart_after)
-    logger.info(f"Restarting {node_name_to_kill} (node-{node_to_kill.node_id})")
-    cluster.start_node(node_to_kill)
+        logger.info(
+            f"Running for {args.restart_after}s before restarting {node_name_to_kill}"
+        )
+        time.sleep(args.restart_after)
+        logger.info(f"Restarting {node_name_to_kill} (node-{node_to_kill.node_id})")
+        cluster.start_node(node_to_kill)
 
-    time.sleep(args.kill_after)
+        logger.info(
+            f"Running for {args.kill_after}s after restarting {node_name_to_kill}"
+        )
+        time.sleep(args.kill_after)
+    else:
+        logger.info(f"Running for {args.duration}s before stopping experiment")
+        time.sleep(args.duration)
+
     client_process.kill()
     cluster.stop()
 
@@ -218,19 +234,42 @@ if __name__ == "__main__":
         help="Name of the experiment to store log files",
     )
 
-    # parser.add_argument(
-    #     "--client-log-level",
-    #     type=str,
-    #     default="DEBUG",
-    #     help="Log level to set on the client",
-    # )
-    # parser.add_argument(
-    #     "--remote-log-level",
-    #     type=str,
-    #     default="DEBUG",
-    #     help="Log level to set on the remote nodes",
-    # )
+    parser.add_argument(
+        "-w",
+        "--write",
+        action="store_true",
+        default=False,
+        help="Run the Go client in write/update mode opposed to read/query mode",
+    )
+    parser.add_argument(
+        "-g",
+        "--goroutines",
+        type=int,
+        default=32,
+        help="Number of client goroutines to run",
+    )
+    parser.add_argument(
+        "-r",
+        "--rate",
+        type=int,
+        default=32,
+        help="Number of requests per second to send to the server",
+    )
+    parser.add_argument(
+        "-t",
+        "--duration",
+        type=int,
+        default=30,
+        help="Duration of the experiment in seconds (ignored if fault tolerance is enabled)",
+    )
 
+    parser.add_argument(
+        "-f",
+        "--fault-tolerance",
+        action="store_true",
+        default=False,
+        help="Run fault tolerance experiments by killing a node and restarting it",
+    )
     parser.add_argument(
         "-l",
         "--kill-leader",
@@ -249,21 +288,6 @@ if __name__ == "__main__":
         type=int,
         default=5,
         help="Time in seconds until the killed node is restarted after it was killed",
-    )
-
-    parser.add_argument(
-        "-w",
-        "--write",
-        action="store_true",
-        default=False,
-        help="Run the Go client in write/update mode opposed to read/query mode",
-    )
-    parser.add_argument(
-        "-g",
-        "--goroutines",
-        type=int,
-        default=32,
-        help="Number of client goroutines to run",
     )
 
     args = parser.parse_args()
