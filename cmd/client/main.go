@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"cs244b-team/dns-raft/common"
 	"cs244b-team/dns-raft/dns"
 	"flag"
@@ -15,6 +16,7 @@ import (
 
 	_dns "github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -99,10 +101,9 @@ func main() {
 
 	// Testing
 	eval := flag.Bool("eval", false, "Run in evaluation mode")
-	numRoutines := flag.Int("routines", 8, "Number of goroutines to use in evaluation mode")
 	update := flag.Bool("update", false, "Send updates to server (default sends queries)")
-	one_update := flag.String("oneupdate", "", "Only issue one DNS update")
-
+	numRoutines := flag.Int("routines", 1, "Number of concurrent routines")
+	sendRate := flag.Int("rate", 1, "Rate of queries/updates per second")
 	flag.Parse()
 
 	serverSplit := strings.Split(*server, ":")
@@ -110,44 +111,54 @@ func main() {
 		log.Fatalf("Invalid server address: %s", *server)
 	}
 
-	var monitorFunc func(chan netip.Addr) = monitorIp
 	if !*eval {
-		if len(*one_update) > 0 {
-			UpdateOnceIP = *one_update
-			monitorFunc = monitorIpOnce
-		}
-		client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
+		client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorIp)
 		client.RunMonitor()
-	} else {
-		var wg sync.WaitGroup
-
-		for i := 1; i <= *numRoutines; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				var m *_dns.Msg
-				client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], monitorFunc)
-
-				for {
-					// Either create update or query request
-					if *update {
-						ip := rand.Uint32()
-						bytes := [4]byte{byte(ip >> 24), byte(ip >> 16), byte(ip >> 8), byte(ip)}
-						addr := netip.AddrFrom4(bytes)
-						m = client.CreateUpdateMessage(addr)
-					} else {
-						m = client.CreateQuestion(*domain)
-					}
-					_, rtt, err := client.SendMessage(m)
-					if err != nil {
-						log.Errorf("Error sending request: %v", err)
-					} else {
-						log.Infof("Response latency: %v", rtt)
-					}
-				}
-			}()
-		}
-
-		wg.Wait()
+		return
 	}
+
+	// Evaluation mode
+	var wg sync.WaitGroup
+	for i := 0; i < *numRoutines; i++ {
+		wg.Add(1)
+
+		go func(id int) {
+			defer wg.Done()
+			ctx := context.Background()
+			client := dns.NewDDNSClient(*zone, *domain, serverSplit[0], serverSplit[1], nil)
+			limiter := rate.NewLimiter(rate.Limit(*sendRate/(*numRoutines)), *sendRate/(*numRoutines))
+
+			j := 0
+			for {
+				limiter.Wait(ctx)
+
+				var m *_dns.Msg
+
+				if *update {
+					// Alternate between updating and clearning the zone
+					ip := rand.Uint32()
+					bytes := [4]byte{byte(ip >> 24), byte(ip >> 16), byte(ip >> 8), byte(ip)}
+					addr := netip.AddrFrom4(bytes)
+					m = client.CreateUpdateMessage(addr)
+				} else {
+					m = client.CreateQuestion(*domain)
+				}
+
+				if *update && (id == 0 && j%3 == 0) {
+					m = client.CreateRemoveRRsetMessage()
+				}
+
+				_, rtt, err := client.SendMessage(m)
+				if err != nil {
+					log.Errorf("Error sending request: %v", err)
+				} else {
+					log.Infof("Response latency: %dms", rtt/1e6)
+				}
+
+				j++
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }
