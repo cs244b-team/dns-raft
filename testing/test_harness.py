@@ -221,7 +221,11 @@ def test_catamaran(args):
 
 def test_bind9(args):
     client_process = run_client(
-        LOAD_BALANCER_IP, args.goroutines, args.rate, args.write, args.experiment_name
+        "34.168.204.145" if args.write else LOAD_BALANCER_IP,
+        args.goroutines,
+        args.rate,
+        args.write,
+        args.experiment_name,
     )
 
     logger.debug("Waiting for client to start...")
