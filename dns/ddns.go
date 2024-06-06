@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	ResourceRecordTTL = 64
-	UpdateTimeout     = 5 * time.Second
+	ResourceRecordTTL   = 64
+	ClientUpdateTimeout = 5 * time.Second
 )
 
 func connect(server string, serverPort string) (dns.Client, *dns.Conn) {
-	client := dns.Client{Net: "udp"}
+	client := dns.Client{Net: "udp", Timeout: ClientUpdateTimeout}
 	conn, err := client.Dial(server + ":" + serverPort)
 	if err != nil {
 		log.Fatalf("Error dialing server: %v", err)
@@ -76,7 +76,7 @@ func (c *DDNSClient) SendMessage(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err
 }
 
 func (c *DDNSClient) SendUpdate(addr netip.Addr, m *dns.Msg) {
-	timer := time.NewTimer(UpdateTimeout)
+	timer := time.NewTimer(ClientUpdateTimeout)
 	for {
 		select {
 		case <-timer.C:
