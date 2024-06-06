@@ -131,10 +131,10 @@ func (c *DDNSClient) CreateUpdateMessage(addr netip.Addr) *dns.Msg {
 	return m
 }
 
-func (c *DDNSClient) CreateRemoveRRsetMessage() *dns.Msg {
+func (c *DDNSClient) CreateRemoveNameMesssage() *dns.Msg {
 	m := new(dns.Msg)
 	m.SetUpdate(c.zone)
-	m.RemoveRRset([]dns.RR{
+	m.RemoveName([]dns.RR{
 		&dns.ANY{
 			Hdr: dns.RR_Header{
 				Name: c.domain,

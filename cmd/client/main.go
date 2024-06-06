@@ -159,7 +159,7 @@ func main() {
 				}
 
 				if *update && (id == 0 && j%3 == 0) {
-					m = client.CreateRemoveRRsetMessage()
+					m = client.CreateRemoveNameMesssage()
 				}
 
 				_, rtt, err := client.SendMessage(m)
