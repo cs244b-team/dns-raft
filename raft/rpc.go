@@ -246,12 +246,17 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 }
 
 // Call RPC on peer p. It will retry every TIMEOUT ms and return the reply (or an error) until CTX errors. Blocking.
-func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
+func callRPC[ResponseType any](node *Node, p *Peer, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
+	node.mu.Lock()
 	// Do not continue calling RPC if p cannot be connected to
-	if p.client == nil && p.Connect() != nil {
-		p.client = nil
+	if p == nil || (p.client == nil && p.Connect() != nil) {
+		if p != nil {
+			p.client = nil
+		}
+		node.mu.Unlock()
 		return None[ResponseType](), errors.New("could not connect")
 	}
+	node.mu.Unlock()
 	var reply ResponseType
 	call := p.client.Go(rpcType, args, &reply, nil)
 	select {
@@ -260,7 +265,7 @@ func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, c
 		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
 		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
 		// that is okay because they are idempotent.
-		return callRPC[ResponseType](p, rpcType, args, timeout, ctx)
+		return callRPC[ResponseType](node, p, rpcType, args, timeout, ctx)
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
 			if resp.Error == rpc.ErrShutdown {
@@ -313,12 +318,17 @@ func callRPCOnLeader[ResponseType any](node *Node, rpcType string, args any, tim
 	}
 }
 
-func callRPCNoRetry[ResponseType any](p *Peer, rpcType string, args any, ctx context.Context) (Optional[ResponseType], error) {
+func callRPCNoRetry[ResponseType any](node *Node, p *Peer, rpcType string, args any, ctx context.Context) (Optional[ResponseType], error) {
+	node.mu.Lock()
 	// Do not continue calling RPC if p cannot be connected to
-	if p.client == nil && p.Connect() != nil {
-		p.client = nil
+	if p == nil || (p.client == nil && p.Connect() != nil) {
+		if p != nil {
+			p.client = nil
+		}
+		node.mu.Unlock()
 		return None[ResponseType](), errors.New("could not connect")
 	}
+	node.mu.Unlock()
 	var reply ResponseType
 	call := p.client.Go(rpcType, args, &reply, nil)
 	select {
@@ -340,7 +350,7 @@ func callRPCNoRetry[ResponseType any](p *Peer, rpcType string, args any, ctx con
 func callPeers[ResponseType any](node *Node, rpcType string, args any, timeout int, ctx context.Context, channel chan<- ResponseType) {
 	for _, peer := range node.peers {
 		go func(peer *Peer) {
-			reply, err := callRPC[ResponseType](peer, rpcType, args, timeout, ctx)
+			reply, err := callRPC[ResponseType](node, peer, rpcType, args, timeout, ctx)
 			if err == nil && reply.HasValue() {
 				channel <- reply.Value()
 			}
