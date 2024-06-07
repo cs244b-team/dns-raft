@@ -184,13 +184,14 @@ def test_catamaran(args):
     logger.info(
         f"Cluster agrees that node-{leader.node_id} is the leader, starting experiment"
     )
+    time.sleep(10)
 
     client_process = run_client(
         LOAD_BALANCER_IP, args.goroutines, args.rate, args.write, args.experiment_name
     )
 
     logger.debug("Waiting for client to start...")
-    time.sleep(2)
+    time.sleep(5)
 
     if args.fault_tolerance:
         logger.info(
