@@ -112,6 +112,18 @@ class Cluster:
     def stop_node(self, node: Node) -> None:
         run_remote_cmd(node, f"sudo kill -9 $(sudo lsof -t -i:{DNS_SERVER_PORT})")
 
+    def partition_node(self, node: Node):
+        run_remote_cmd(
+            node,
+            f"sudo ufw deny {RAFT_PORT} && sudo ufw deny {DNS_SERVER_PORT} && sudo ufw --force enable",
+        )
+
+    def unpartition_node(self, node: Node):
+        run_remote_cmd(
+            node,
+            f"sudo ufw allow {RAFT_PORT} && sudo ufw allow {DNS_SERVER_PORT} && sudo ufw disable",
+        )
+
     def get_leader(self) -> T.Optional[Node]:
         suspected_leaders = {}
 
@@ -198,14 +210,14 @@ def test_catamaran(args):
         )
 
         logger.info(f"Killing {node_name_to_kill} (node-{node_to_kill.node_id})")
-        cluster.stop_node(node_to_kill)
+        cluster.partition_node(node_to_kill)
 
         logger.info(
             f"Running for {args.restart_after}s before restarting {node_name_to_kill}"
         )
         time.sleep(args.restart_after)
         logger.info(f"Restarting {node_name_to_kill} (node-{node_to_kill.node_id})")
-        cluster.start_node(node_to_kill)
+        cluster.unpartition_node(node_to_kill)
 
         logger.info(
             f"Running for {args.kill_after}s after restarting {node_name_to_kill}"
