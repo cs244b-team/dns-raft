@@ -110,16 +110,11 @@ class Cluster:
         )
 
     def stop_node(self, node: Node) -> None:
-        run_remote_cmd(node, f"sudo kill -2 $(sudo lsof -t -i:{DNS_SERVER_PORT})")
+        run_remote_cmd(node, f"sudo kill -9 $(sudo lsof -t -i:{DNS_SERVER_PORT})")
 
-    def partition_node(self, node: Node):
-        run_remote_cmd(
-            node,
-            f"sudo ufw deny {RAFT_PORT} && sudo ufw deny {DNS_SERVER_PORT} && sudo ufw deny out to any port {RAFT_PORT} && sudo ufw --force enable",
-        )
-
-    def unpartition_node(self, node: Node):
-        run_remote_cmd(node, "sudo ufw disable")
+    def partition_node_for(self, node: Node, duration: int) -> None:
+        # Faster to just turn bring the node's network interface down
+        run_remote_cmd(node, f"sudo sh ./dns-raft/testing/partition.sh {duration}")
 
     def get_leader(self) -> T.Optional[Node]:
         suspected_leaders = {}
@@ -207,14 +202,14 @@ def test_catamaran(args):
         )
 
         logger.info(f"Partitioning {node_name_to_kill} (node-{node_to_kill.node_id})")
-        cluster.stop_node(node_to_kill)
 
         logger.info(
             f"Running for {args.restart_after}s before restarting {node_name_to_kill}"
         )
-        time.sleep(args.restart_after)
-        logger.info(f"Restarting {node_name_to_kill} (node-{node_to_kill.node_id})")
-        cluster.start_node(node_to_kill)
+
+        cluster.partition_node_for(node_to_kill, args.restart_after)
+
+        logger.info(f"Restarted {node_name_to_kill} (node-{node_to_kill.node_id})")
 
         logger.info(
             f"Running for {args.kill_after}s after restarting {node_name_to_kill}"

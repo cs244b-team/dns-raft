@@ -27,7 +27,7 @@ func DefaultConfig() Config {
 		MaximumBatchSize:             10,
 		RPCRetryInterval:             75,
 		ForwardToLeaderRetryInterval: 150000,
-		UpdateTimeout:                5000,
+		UpdateTimeout:                1500,
 	}
 }
 
