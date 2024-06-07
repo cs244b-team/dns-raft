@@ -248,17 +248,15 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesResp
 // Call RPC on peer p. It will retry every TIMEOUT ms and return the reply (or an error) until CTX errors. Blocking.
 func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
-	if p.Connect() != nil {
+	if p.client == nil && p.Connect() != nil {
+		p.client = nil
 		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
-	p.mu.RLock()
-	_pid := p.id
 	call := p.client.Go(rpcType, args, &reply, nil)
-	p.mu.RUnlock()
 	select {
 	case <-time.After(time.Duration(timeout) * time.Millisecond):
-		log.Warnf("RPC %s to node-%d timed out", rpcType, _pid)
+		log.Warnf("RPC %s to node-%d timed out", rpcType, p.id)
 		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
 		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
 		// that is okay because they are idempotent.
@@ -266,16 +264,14 @@ func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, c
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
 			if resp.Error == rpc.ErrShutdown {
-				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", _pid, rpcType)
-				p.mu.Lock()
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
 				p.client = nil
-				p.mu.Unlock()
 			}
 			return None[ResponseType](), resp.Error
 		}
 		return Some[ResponseType](reply), nil
 	case <-ctx.Done():
-		log.Debugf("RPC %s to node-%d cancelled", rpcType, _pid)
+		log.Debugf("RPC %s to node-%d cancelled", rpcType, p.id)
 		return None[ResponseType](), errors.New("RPC cancelled")
 	}
 }
@@ -284,19 +280,20 @@ func callRPC[ResponseType any](p *Peer, rpcType string, args any, timeout int, c
 func callRPCOnLeader[ResponseType any](node *Node, rpcType string, args any, timeout int, ctx context.Context) (Optional[ResponseType], error) {
 	node.mu.Lock()
 	p := node.getLeaderPeer()
-	node.mu.Unlock()
 	// Do not continue calling RPC if p cannot be connected to
-	if p == nil || p.Connect() != nil {
+	if p == nil || (p.client == nil && p.Connect() != nil) {
+		if p != nil {
+			p.client = nil
+		}
+		node.mu.Unlock()
 		return None[ResponseType](), errors.New("could not connect")
 	}
+	node.mu.Unlock()
 	var reply ResponseType
-	p.mu.RLock()
-	_pid := p.id
 	call := p.client.Go(rpcType, args, &reply, nil)
-	p.mu.RUnlock()
 	select {
 	case <-time.After(time.Duration(timeout) * time.Millisecond):
-		log.Warnf("RPC %s to node-%d timed out", rpcType, _pid)
+		log.Warnf("RPC %s to node-%d timed out", rpcType, p.id)
 		// TODO: how can we handle the fact that ctx can be cancelled in between the case statement and recalling callRPC?
 		// If ctx is cancelled between the case statement and the call to callRPC, we'll issue an extra request, but
 		// that is okay because they are idempotent.
@@ -304,38 +301,32 @@ func callRPCOnLeader[ResponseType any](node *Node, rpcType string, args any, tim
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
 			if resp.Error == rpc.ErrShutdown {
-				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", _pid, rpcType)
-				p.mu.Lock()
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
 				p.client = nil
-				p.mu.Unlock()
 			}
 			return None[ResponseType](), resp.Error
 		}
 		return Some[ResponseType](reply), nil
 	case <-ctx.Done():
-		log.Debugf("RPC %s to node-%d cancelled", rpcType, _pid)
+		log.Debugf("RPC %s to node-%d cancelled", rpcType, p.id)
 		return None[ResponseType](), errors.New("RPC cancelled")
 	}
 }
 
 func callRPCNoRetry[ResponseType any](p *Peer, rpcType string, args any, ctx context.Context) (Optional[ResponseType], error) {
 	// Do not continue calling RPC if p cannot be connected to
-	if p.Connect() != nil {
+	if p.client == nil && p.Connect() != nil {
+		p.client = nil
 		return None[ResponseType](), errors.New("could not connect")
 	}
 	var reply ResponseType
-	p.mu.RLock()
-	_pid := p.id
 	call := p.client.Go(rpcType, args, &reply, nil)
-	p.mu.RUnlock()
 	select {
 	case resp := <-call.Done:
 		if resp != nil && resp.Error != nil {
 			if resp.Error == rpc.ErrShutdown {
-				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", _pid, rpcType)
-				p.mu.Lock()
+				log.Debugf("connection to node-%d was shut down when attempting to send %s RPC", p.id, rpcType)
 				p.client = nil
-				p.mu.Unlock()
 			}
 			return None[ResponseType](), resp.Error
 		}
