@@ -158,6 +158,10 @@ func main() {
 					m = client.CreateQuestion(*domain)
 				}
 
+				if *update && (id == 0 && j%3 == 0) {
+					m = client.CreateRemoveNameMesssage()
+				}
+
 				_, rtt, err := client.SendMessage(m)
 				if err != nil {
 					log.Errorf("Error sending request: %v", err)
