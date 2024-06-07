@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -134,6 +135,16 @@ func NewNode(serverId int, cluster []Address, config Config) *Node {
 			r.peers = append(r.peers, NewPeer(i, address))
 		}
 	}
+
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		<-c
+		r.mu.Lock()
+		log.Warnf("Killing node %d", r.serverId)
+		time.Sleep(1 * time.Second)
+		os.Exit(0)
+	}()
 
 	// Register RPC handler and serve immediately
 	r.startRpcServer()

@@ -110,7 +110,7 @@ class Cluster:
         )
 
     def stop_node(self, node: Node) -> None:
-        run_remote_cmd(node, f"sudo kill -9 $(sudo lsof -t -i:{DNS_SERVER_PORT})")
+        run_remote_cmd(node, f"sudo kill -2 $(sudo lsof -t -i:{DNS_SERVER_PORT})")
 
     def partition_node(self, node: Node):
         run_remote_cmd(
@@ -207,14 +207,14 @@ def test_catamaran(args):
         )
 
         logger.info(f"Partitioning {node_name_to_kill} (node-{node_to_kill.node_id})")
-        cluster.partition_node(node_to_kill)
+        cluster.stop_node(node_to_kill)
 
         logger.info(
             f"Running for {args.restart_after}s before restarting {node_name_to_kill}"
         )
         time.sleep(args.restart_after)
         logger.info(f"Restarting {node_name_to_kill} (node-{node_to_kill.node_id})")
-        cluster.unpartition_node(node_to_kill)
+        cluster.start_node(node_to_kill)
 
         logger.info(
             f"Running for {args.kill_after}s after restarting {node_name_to_kill}"
