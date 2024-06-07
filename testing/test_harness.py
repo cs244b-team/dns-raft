@@ -186,7 +186,7 @@ def test_catamaran(args):
     )
 
     logger.debug("Waiting for client to start...")
-    time.sleep(2)
+    time.sleep(5)
 
     if args.fault_tolerance:
         logger.info(
