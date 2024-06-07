@@ -657,7 +657,7 @@ func (node *Node) sendAppendEntries(ctx context.Context) {
 		go func(p *Peer, i int) {
 			args := peer_args[i]
 			nextIdx := args.PrevLogIndex + 1
-			reply, err := callRPCNoRetry[AppendEntriesResponse](node, p, "Node.AppendEntries", args, ctx)
+			reply, err := callRPCNoRetry[AppendEntriesResponse](p, "Node.AppendEntries", args, ctx)
 			if err != nil {
 				log.Errorf("node-%d experienced AppendEntries error: %s", p.id, err)
 				return
