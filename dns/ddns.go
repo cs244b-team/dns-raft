@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	ResourceRecordTTL   = 64
+	ResourceRecordTTL   = 0
 	ClientUpdateTimeout = 5 * time.Second
 )
 
@@ -52,6 +52,16 @@ func (c *DDNSClient) RunMonitor() {
 	go c.monitorIp(ch)
 	for addr := range ch {
 		m := c.CreateUpdateMessage(addr)
+		log.Debugf("Updating %s to %s", c.domain, addr)
+		c.SendUpdate(addr, m)
+	}
+}
+
+func (c *DDNSClient) RunMonitorWithDelete() {
+	ch := make(chan netip.Addr)
+	go c.monitorIp(ch)
+	for addr := range ch {
+		m := c.CreateUpdateDeleteMessage(addr)
 		log.Debugf("Updating %s to %s", c.domain, addr)
 		c.SendUpdate(addr, m)
 	}
@@ -128,6 +138,30 @@ func (c *DDNSClient) CreateUpdateMessage(addr netip.Addr) *dns.Msg {
 			},
 		})
 	}
+	return m
+}
+
+func (c *DDNSClient) CreateUpdateDeleteMessage(addr netip.Addr) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetUpdate(c.zone)
+	m.RemoveName([]dns.RR{
+		&dns.ANY{
+			Hdr: dns.RR_Header{
+				Name: c.domain,
+			},
+		},
+	})
+	m.Insert([]dns.RR{
+		&dns.A{
+			Hdr: dns.RR_Header{
+				Name:   c.domain,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    ResourceRecordTTL,
+			},
+			A: addr.AsSlice(),
+		},
+	})
 	return m
 }
 

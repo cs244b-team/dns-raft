@@ -1,0 +1,34 @@
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #f4f4f4;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  font-size: x-large;
+  color: #395C6B;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+#projName {
+  color: #D36582;
+}
+
+#ipAddr {
+  font-weight: bolder;
+}
+
+.image_container img {
+  height: 15em;
+}
+
+.imgCite {
+  margin-top: 0;
+  font-size: small;
+  text-align: right;
+}
