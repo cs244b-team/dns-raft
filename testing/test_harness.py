@@ -115,14 +115,11 @@ class Cluster:
     def partition_node(self, node: Node):
         run_remote_cmd(
             node,
-            f"sudo ufw deny {RAFT_PORT} && sudo ufw deny {DNS_SERVER_PORT} && sudo ufw --force enable",
+            f"sudo ufw deny {RAFT_PORT} && sudo ufw deny {DNS_SERVER_PORT} && sudo ufw deny out to any port {RAFT_PORT} && sudo ufw --force enable",
         )
 
     def unpartition_node(self, node: Node):
-        run_remote_cmd(
-            node,
-            f"sudo ufw allow {RAFT_PORT} && sudo ufw allow {DNS_SERVER_PORT} && sudo ufw disable",
-        )
+        run_remote_cmd(node, "sudo ufw disable")
 
     def get_leader(self) -> T.Optional[Node]:
         suspected_leaders = {}
@@ -209,7 +206,7 @@ def test_catamaran(args):
             leader if args.kill_leader else cluster.get_random_follower(leader)
         )
 
-        logger.info(f"Killing {node_name_to_kill} (node-{node_to_kill.node_id})")
+        logger.info(f"Partitioning {node_name_to_kill} (node-{node_to_kill.node_id})")
         cluster.partition_node(node_to_kill)
 
         logger.info(
