@@ -50,6 +50,7 @@ func monitorIp(updateChannel chan netip.Addr) {
 		}
 
 		if new != current {
+			time.Sleep(3 * time.Second)
 			log.Infof("IP changed from %s to %s", current, new)
 			current = new
 			updateChannel <- new
