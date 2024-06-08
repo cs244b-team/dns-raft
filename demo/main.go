@@ -33,6 +33,14 @@ func GetLocalIP() (netip.Addr, error) {
 	return netip.Addr{}, errors.New("No local address found")
 }
 
+func connected() (ok bool) {
+	_, err := http.Get("http://clients3.google.com/generate_204")
+	if err != nil {
+		return false
+	}
+	return true
+}
+
 func monitorIp(updateChannel chan netip.Addr) {
 	current, err := GetLocalIP()
 	if err != nil {
@@ -49,8 +57,7 @@ func monitorIp(updateChannel chan netip.Addr) {
 			continue
 		}
 
-		if new != current {
-			time.Sleep(3 * time.Second)
+		if new != current && connected() {
 			log.Infof("IP changed from %s to %s", current, new)
 			current = new
 			updateChannel <- new
