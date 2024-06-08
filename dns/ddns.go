@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -93,6 +94,13 @@ func (c *DDNSClient) SendUpdate(addr netip.Addr, m *dns.Msg) {
 			log.Errorf("Update for %s to %s timed out", c.domain, addr)
 			return
 		default:
+			time.Sleep(1 * time.Second)
+
+			c.serverConn.Close()
+			client, conn := connect(strings.Split(c.serverConn.RemoteAddr().String(), ":")[0], c.serverPort)
+			c.serverConn = conn
+			c.dnsClient = &client
+
 			// TODO: handle removal of domain for demo
 			_, rtt, err := c.SendMessage(m)
 			if err == nil {
