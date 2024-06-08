@@ -13,7 +13,7 @@ import (
 
 const (
 	ResourceRecordTTL   = 0
-	ClientUpdateTimeout = 2 * time.Second
+	ClientUpdateTimeout = 5 * time.Second
 )
 
 func connect(server string, serverPort string) (dns.Client, *dns.Conn) {
