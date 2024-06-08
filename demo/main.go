@@ -87,7 +87,7 @@ func main() {
 		tmpl.Execute(w, data)
 	})
 
-	go launchDemoClient("catamaran.xyz.", "app.catamaran.xyz.", "34.83.34.185", "53")
+	go launchDemoClient("catamaran.com.", "www.catamaran.com.", "34.83.34.185", "53")
 	fmt.Println("Server starting on port 80...")
 	if err := http.ListenAndServe(":80", nil); err != nil {
 		fmt.Println("Error starting server:", err)
